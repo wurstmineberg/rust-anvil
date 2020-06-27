@@ -22,6 +22,10 @@ use {
     serde::Deserialize
 };
 
+mod biome;
+
+pub use biome::Biome;
+
 lazy_static! {
     static ref REGION_FILENAME_REGEX: Regex = Regex::new("^r\\.(-?[0-9]+)\\.(-?[0-9]+)\\.mca$").expect("failed to parse region filename regex");
 }
@@ -86,7 +90,7 @@ impl Region {
     /// Returns a `ChunkColumn` in this region given its chunk coordinates (i.e. the block coordinates of its northwesternmost block divided by 16) **relative** to the northwest corner of this region.
     pub fn chunk_column_relative(&self, [x_offset, z_offset]: [u8; 2]) -> Result<Option<ChunkColumn>, ChunkColumnDecodeError> {
         //TODO make sure coords are < 32
-        let (offset, sector_count) = self.locations[(x_offset + z_offset * 32) as usize];
+        let (offset, sector_count) = self.locations[x_offset as usize + z_offset as usize * 32];
         if offset == 0 { return Ok(None) }
         (&self.file).seek(SeekFrom::Start(4096 * u64::from(offset)))?;
         let mut data = vec![0; 4096 * sector_count as usize];
@@ -179,7 +183,13 @@ pub struct ChunkColumn {
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct ChunkLevel {
-    //TODO fields
+    /// The x chunk coordinate of this chunk, i.e. the block coordinates of its westernmost blocks divided by 16.
+    #[serde(rename = "xPos")]
+    pub x_pos: i32,
+    /// The z chunk coordinate of this chunk, i.e. the block coordinates of its northernmost blocks divided by 16.
+    #[serde(rename = "zPos")]
+    pub z_pos: i32,
+    biomes: Vec<i32>
 }
 
 impl ChunkColumn {
@@ -195,5 +205,30 @@ impl ChunkColumn {
             [2] => nbt::from_zlib_reader(data_cursor.take(len as u64))?,
             [compression] => return Err(ChunkColumnDecodeError::UnknownCompressionType(compression))
         })
+    }
+
+    fn coords_to_relative(&self, [x, y, z]: [i32; 3]) -> Result<[u8; 3], [i32; 3]> {
+        if x >= self.level.x_pos << 4 && x < (self.level.x_pos + 1) << 4 && y >= 0 && y < 256 && z >= self.level.z_pos << 4 && z < (self.level.z_pos + 1) << 4 {
+            Ok([x as u8 & 15, y as u8, z as u8 & 15])
+        } else {
+            Err([x, y, z])
+        }
+    }
+
+    /// Returns the [biome](https://minecraft.gamepedia.com/Biome) at the given block.
+    ///
+    /// Returns `Err` if the biome ID is unknown. This can happen if new biomes are added to Minecraft and this library is not yet updated.
+    ///
+    /// # Panics
+    ///
+    /// This method panics if the coordinates are not in this chunk column (including a y coordinate below 0 or above 255).
+    pub fn biome_at(&self, coords: [i32; 3]) -> Result<Biome, i32> {
+        let [x, y, z] = self.coords_to_relative(coords).expect("coordinates out of bounds");
+        let id = self.level.biomes[if self.level.biomes.len() == 1024 { // starting in 19w36a, biomes are stored per 4×4×4 cube
+            ((y as usize >> 2) << 4) + ((z as usize >> 2) << 2) + (x as usize >> 2)
+        } else { // before 19w36a, biomes were stored per block column
+            ((z as usize) << 4) + x as usize
+        }];
+        Biome::from_id(id).ok_or(id)
     }
 }
