@@ -215,6 +215,35 @@ impl ChunkColumn {
         }
     }
 
+    /// Returns the biomes for all blocks in this chunk column. Blocks are grouped as west-east rows in north-south layers in a bottom-top column.
+    ///
+    /// If any block has an unknown biome ID, `None` is returned. This can happen if new biomes are added to Minecraft and this library is not yet updated.
+    pub fn biomes(&self) -> Option<[[[Biome; 16]; 16]; 256]> {
+        let mut buf = [[[Biome::Ocean; 16]; 16]; 256];
+        for (i, &bid) in self.level.biomes.iter().enumerate() {
+            let biome = Biome::from_id(bid)?;
+            if self.level.biomes.len() == 1024 { // starting in 19w36a, biomes are stored per 4×4×4 cube
+                let y = (i >> 4) * 4;
+                let z = i & 0xc;
+                let x = (i & 0x3) * 4;
+                for y in y..y + 4 {
+                    for z in z..z + 4 {
+                        for x in x..x + 4 {
+                            buf[y][z][x] = biome;
+                        }
+                    }
+                }
+            } else { // before 19w36a, biomes were stored per block column
+                let z = i >> 4;
+                let x = i & 15;
+                for y in 0..256 {
+                    buf[y][z][x] = biome;
+                }
+            }
+        }
+        Some(buf)
+    }
+
     /// Returns the [biome](https://minecraft.gamepedia.com/Biome) at the given block.
     ///
     /// Returns `Err` if the biome ID is unknown. This can happen if new biomes are added to Minecraft and this library is not yet updated.
