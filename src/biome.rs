@@ -178,6 +178,11 @@ impl Biome {
     }
 }
 
+/// Returns `Ocean`, the biome with numeric ID 0.
+impl Default for Biome {
+    fn default() -> Biome { Biome::Ocean }
+}
+
 impl FromStr for Biome {
     type Err = ();
 

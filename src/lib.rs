@@ -88,14 +88,19 @@ impl Region {
     }
 
     /// Returns a `ChunkColumn` in this region given its chunk coordinates (i.e. the block coordinates of its northwesternmost block divided by 16) **relative** to the northwest corner of this region.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either of the given coordinates is not less than 32.
     pub fn chunk_column_relative(&self, [x_offset, z_offset]: [u8; 2]) -> Result<Option<ChunkColumn>, ChunkColumnDecodeError> {
-        //TODO make sure coords are < 32
+        assert!(x_offset < 32 && z_offset < 32);
+        let coords = [self.coords[0] * 32 + x_offset as i32, self.coords[1] * 32 + z_offset as i32];
         let (offset, sector_count) = self.locations[x_offset as usize + z_offset as usize * 32];
         if offset == 0 { return Ok(None) }
-        (&self.file).seek(SeekFrom::Start(4096 * u64::from(offset)))?;
+        (&self.file).seek(SeekFrom::Start(4096 * u64::from(offset))).map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Io("seek", e) })?;
         let mut data = vec![0; 4096 * sector_count as usize];
-        (&self.file).read_exact(&mut data)?;
-        Ok(Some(ChunkColumn::new(data)?))
+        (&self.file).read_exact(&mut data).map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Io("read chunk column", e) })?;
+        Ok(Some(ChunkColumn::new(coords, data)?))
     }
 }
 
@@ -154,10 +159,17 @@ impl<'a> Iterator for RegionIter<'a> {
 }
 
 /// An error returned by functions that construct `ChunkColumn`s.
-#[derive(Debug, From)]
-pub enum ChunkColumnDecodeError {
+#[derive(Debug)]
+pub struct ChunkColumnDecodeError {
+    coords: [i32; 2],
+    kind: ChunkColumnDecodeErrorKind
+}
+
+/// The contents of a `ChunkColumnDecodeError`.
+#[derive(Debug)]
+pub enum ChunkColumnDecodeErrorKind {
     #[allow(missing_docs)]
-    Io(io::Error),
+    Io(&'static str, io::Error),
     #[allow(missing_docs)]
     Nbt(nbt::Error),
     /// Chunk columns are stored using different types of compression inside `.mca` files. The following compression types are currently implemented:
@@ -193,17 +205,17 @@ pub struct ChunkLevel {
 }
 
 impl ChunkColumn {
-    fn new(data: Vec<u8>) -> Result<ChunkColumn, ChunkColumnDecodeError> {
+    fn new(coords: [i32; 2], data: Vec<u8>) -> Result<ChunkColumn, ChunkColumnDecodeError> {
         let mut data_cursor = &*data;
         let mut len = [0; 4];
-        data_cursor.read_exact(&mut len)?;
+        data_cursor.read_exact(&mut len).map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Io("read compressed length", e) })?;
         let len = u32::from_be_bytes(len) - 1;
         let mut compression = [0; 1];
-        data_cursor.read_exact(&mut compression)?;
+        data_cursor.read_exact(&mut compression).map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Io("read compression type", e) })?;
         Ok(match compression {
-            [1] => nbt::from_gzip_reader(data_cursor.take(len as u64))?,
-            [2] => nbt::from_zlib_reader(data_cursor.take(len as u64))?,
-            [compression] => return Err(ChunkColumnDecodeError::UnknownCompressionType(compression))
+            [1] => nbt::from_gzip_reader(data_cursor.take(len as u64)).map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Nbt(e) })?,
+            [2] => nbt::from_zlib_reader(data_cursor.take(len as u64)).map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Nbt(e) })?,
+            [compression] => return Err(ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::UnknownCompressionType(compression) })
         })
     }
 
@@ -217,11 +229,13 @@ impl ChunkColumn {
 
     /// Returns the biomes for all blocks in this chunk column. Blocks are grouped as west-east rows in north-south layers in a bottom-top column.
     ///
-    /// If any block has an unknown biome ID, `None` is returned. This can happen if new biomes are added to Minecraft and this library is not yet updated.
-    pub fn biomes(&self) -> Option<[[[Biome; 16]; 16]; 256]> {
+    /// # Error
+    ///
+    /// If any block has an unknown biome ID, `Err` is returned with the ID. This can happen if new biomes are added to Minecraft and this library is not yet updated.
+    pub fn biomes(&self) -> Result<[[[Biome; 16]; 16]; 256], i32> {
         let mut buf = [[[Biome::Ocean; 16]; 16]; 256];
         for (i, &bid) in self.level.biomes.iter().enumerate() {
-            let biome = Biome::from_id(bid)?;
+            let biome = Biome::from_id(bid).ok_or(bid)?;
             if self.level.biomes.len() == 1024 { // starting in 19w36a, biomes are stored per 4×4×4 cube
                 let y = (i >> 4) * 4;
                 let z = i & 0xc;
@@ -241,7 +255,7 @@ impl ChunkColumn {
                 }
             }
         }
-        Some(buf)
+        Ok(buf)
     }
 
     /// Returns the [biome](https://minecraft.gamepedia.com/Biome) at the given block.
@@ -260,4 +274,9 @@ impl ChunkColumn {
         }];
         Biome::from_id(id).ok_or(id)
     }
+}
+
+#[test]
+fn test_weird_region() {
+    Region::open("assets\\r.11.-5.mca").unwrap().chunk_column([372, -132]).unwrap();
 }
