@@ -98,8 +98,11 @@ impl Region {
         let (offset, sector_count) = self.locations[x_offset as usize + z_offset as usize * 32];
         if offset == 0 { return Ok(None) }
         (&self.file).seek(SeekFrom::Start(4096 * u64::from(offset))).map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Io("seek", e) })?;
-        let mut data = vec![0; 4096 * sector_count as usize];
-        (&self.file).read_exact(&mut data).map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Io("read chunk column", e) })?;
+        // The Minecraft wiki says:
+        // > Minecraft always pads the last chunk's data to be a multiple-of-4096B in length
+        // But this seems to no longer be the case in Minecraft 1.16.1, so this implementation simply reads until EOF if the remaining file is shorter than indicated by sector_count.
+        let mut data = Vec::default();
+        (&self.file).take(4096 * sector_count as u64).read_to_end(&mut data).map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Io("read chunk column", e) })?;
         Ok(Some(ChunkColumn::new(coords, data)?))
     }
 }
