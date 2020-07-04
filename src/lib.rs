@@ -204,7 +204,8 @@ pub struct ChunkLevel {
     /// The z chunk coordinate of this chunk, i.e. the block coordinates of its northernmost blocks divided by 16.
     #[serde(rename = "zPos")]
     pub z_pos: i32,
-    biomes: Vec<i32>
+    /// `None` for chunks that haven't had biomes generated for them yet.
+    biomes: Option<Vec<i32>>
 }
 
 impl ChunkColumn {
@@ -232,14 +233,21 @@ impl ChunkColumn {
 
     /// Returns the biomes for all blocks in this chunk column. Blocks are grouped as west-east rows in north-south layers in a bottom-top column.
     ///
-    /// # Error
+    /// # Errors
     ///
-    /// If any block has an unknown biome ID, `Err` is returned with the ID. This can happen if new biomes are added to Minecraft and this library is not yet updated.
-    pub fn biomes(&self) -> Result<[[[Biome; 16]; 16]; 256], i32> {
+    /// If any block has an unknown biome ID, `Err` is returned with `Some` of the ID. This can happen if new biomes are added to Minecraft and this library is not yet updated.
+    ///
+    /// If the chunk does not have the `Biomes` tag, `Err(None)` is returned. This can happen for a chunk on the edge of the generated world where the biomes haven't been generated.
+    pub fn biomes(&self) -> Result<[[[Biome; 16]; 16]; 256], Option<i32>> {
+        let biomes = if let Some(ref biomes) = self.level.biomes {
+            biomes
+        } else {
+            return Err(None)
+        };
         let mut buf = [[[Biome::Ocean; 16]; 16]; 256];
-        for (i, &bid) in self.level.biomes.iter().enumerate() {
-            let biome = Biome::from_id(bid).ok_or(bid)?;
-            if self.level.biomes.len() == 1024 { // starting in 19w36a, biomes are stored per 4×4×4 cube
+        for (i, &bid) in biomes.iter().enumerate() {
+            let biome = Biome::from_id(bid).ok_or(Some(bid))?;
+            if biomes.len() == 1024 { // starting in 19w36a, biomes are stored per 4×4×4 cube
                 let y = (i >> 4) * 4;
                 let z = i & 0xc;
                 let x = (i & 0x3) * 4;
@@ -263,19 +271,28 @@ impl ChunkColumn {
 
     /// Returns the [biome](https://minecraft.gamepedia.com/Biome) at the given block.
     ///
-    /// Returns `Err` if the biome ID is unknown. This can happen if new biomes are added to Minecraft and this library is not yet updated.
+    /// # Errors
+    ///
+    /// If the block has an unknown biome ID, `Err` is returned with `Some` of the ID. This can happen if new biomes are added to Minecraft and this library is not yet updated.
+    ///
+    /// If the chunk does not have the `Biomes` tag, `Err(None)` is returned. This can happen for a chunk on the edge of the generated world where the biomes haven't been generated.
     ///
     /// # Panics
     ///
     /// This method panics if the coordinates are not in this chunk column (including a y coordinate below 0 or above 255).
-    pub fn biome_at(&self, coords: [i32; 3]) -> Result<Biome, i32> {
+    pub fn biome_at(&self, coords: [i32; 3]) -> Result<Biome, Option<i32>> {
+        let biomes = if let Some(ref biomes) = self.level.biomes {
+            biomes
+        } else {
+            return Err(None)
+        };
         let [x, y, z] = self.coords_to_relative(coords).expect("coordinates out of bounds");
-        let id = self.level.biomes[if self.level.biomes.len() == 1024 { // starting in 19w36a, biomes are stored per 4×4×4 cube
+        let id = biomes[if biomes.len() == 1024 { // starting in 19w36a, biomes are stored per 4×4×4 cube
             ((y as usize >> 2) << 4) + ((z as usize >> 2) << 2) + (x as usize >> 2)
         } else { // before 19w36a, biomes were stored per block column
             ((z as usize) << 4) + x as usize
         }];
-        Biome::from_id(id).ok_or(id)
+        Biome::from_id(id).ok_or(Some(id))
     }
 }
 
