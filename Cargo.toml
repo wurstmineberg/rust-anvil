@@ -6,13 +6,12 @@ description = "A parser for Minecraft's Anvil world format."
 readme = "README.md"
 keywords = ["anvil", "minecraft", "region"]
 license = "MIT"
-edition = "2018"
+edition = "2021"
 
 [dependencies]
-derive_more = "0.99"
-hematite-nbt = "0.4"
-lazy_static = "1"
-regex = "1"
+hematite-nbt = "0.5"
+lazy-regex = "2"
+thiserror = "1"
 
 [dependencies.serde]
 version = "1"

@@ -11,34 +11,28 @@ use {
         io::{
             self,
             SeekFrom,
-            prelude::*
+            prelude::*,
         },
         num::ParseIntError,
-        path::Path
+        path::Path,
     },
-    derive_more::From,
-    lazy_static::lazy_static,
-    regex::Regex,
-    serde::Deserialize
+    lazy_regex::regex_captures,
+    serde::Deserialize,
 };
 
 mod biome;
 
 pub use biome::Biome;
 
-lazy_static! {
-    static ref REGION_FILENAME_REGEX: Regex = Regex::new("^r\\.(-?[0-9]+)\\.(-?[0-9]+)\\.mca$").expect("failed to parse region filename regex");
-}
-
 /// An error returned by `Region::open`.
-#[derive(Debug, From)]
+#[derive(Debug, thiserror::Error)]
 pub enum RegionDecodeError {
     /// The given filename did not match the region coordinates format, `r.<x>.<z>.mca`.
+    #[error("the given filename did not match the region coordinates format, `r.<x>.<z>.mca`")]
     InvalidFileName,
-    #[allow(missing_docs)]
-    Io(io::Error),
+    #[allow(missing_docs)] #[error(transparent)] Io(#[from] io::Error),
     /// The x or z coordinate did not fit into an `i32`.
-    ParseInt(ParseIntError)
+    #[error(transparent)] ParseInt(#[from] ParseIntError),
 }
 
 /// A region is a section of a world that's stored as a single `.mca` file, consisting of 32×32 chunk columns.
@@ -47,7 +41,7 @@ pub struct Region {
     pub coords: [i32; 2],
     locations: [(u32, u8); 1024],
     //timestamps: [u32; 1024],
-    file: File
+    file: File,
 }
 
 impl Region {
@@ -57,8 +51,8 @@ impl Region {
     ///
     /// See the `RegionDecodeError` docs.
     pub fn open(path: impl AsRef<Path>) -> Result<Region, RegionDecodeError> {
-        let captures = REGION_FILENAME_REGEX.captures(path.as_ref().file_name().ok_or(RegionDecodeError::InvalidFileName)?.to_str().ok_or(RegionDecodeError::InvalidFileName)?).ok_or(RegionDecodeError::InvalidFileName)?;
-        let coords = [captures[1].parse()?, captures[2].parse()?];
+        let (_, rx, rz) = regex_captures!("^r\\.(-?[0-9]+)\\.(-?[0-9]+)\\.mca$", path.as_ref().file_name().ok_or(RegionDecodeError::InvalidFileName)?.to_str().ok_or(RegionDecodeError::InvalidFileName)?).ok_or(RegionDecodeError::InvalidFileName)?;
+        let coords = [rx.parse()?, rz.parse()?];
         let mut file = File::open(path)?;
         let mut locations = [(0, 0); 1024];
         for i in 0..1024 {
@@ -124,7 +118,7 @@ impl<'a> IntoIterator for &'a Region {
         RegionIter {
             region: self,
             x_offset: 0,
-            z_offset: 0
+            z_offset: 0,
         }
     }
 }
@@ -133,7 +127,7 @@ impl<'a> IntoIterator for &'a Region {
 pub struct RegionIter<'a> {
     region: &'a Region,
     x_offset: u8,
-    z_offset: u8
+    z_offset: u8,
 }
 
 impl<'a> Iterator for RegionIter<'a> {
@@ -151,7 +145,7 @@ impl<'a> Iterator for RegionIter<'a> {
             match self.region.chunk_column_relative(old_offsets) {
                 Ok(Some(col)) => return Some(Ok(col)),
                 Ok(None) => {}
-                Err(e) => return Some(Err(e))
+                Err(e) => return Some(Err(e)),
             }
         }
     }
@@ -164,8 +158,10 @@ impl<'a> Iterator for RegionIter<'a> {
 /// An error returned by functions that construct `ChunkColumn`s.
 #[derive(Debug)]
 pub struct ChunkColumnDecodeError {
-    coords: [i32; 2],
-    kind: ChunkColumnDecodeErrorKind
+    /// The chunk coordinates where the error occurred.
+    pub coords: [i32; 2],
+    /// Information about what kind of error occurred.
+    pub kind: ChunkColumnDecodeErrorKind,
 }
 
 /// The contents of a `ChunkColumnDecodeError`.
@@ -181,7 +177,7 @@ pub enum ChunkColumnDecodeErrorKind {
     /// 2. zlib
     ///
     /// If a chunk column with a different compression type is encountered, this error is returned, containing the compression type ID.
-    UnknownCompressionType(u8)
+    UnknownCompressionType(u8),
 }
 
 /// A chunk column represents 16 chunks stacked vertically, or 16×256×16 blocks.
@@ -191,7 +187,7 @@ pub struct ChunkColumn {
     /// The format of `level` may have different semantics depending on this value.
     pub data_version: i32,
     /// The data of this chunk column, with contents depending on `data_version`.
-    pub level: ChunkLevel
+    pub level: ChunkLevel,
 }
 
 /// The contents of the `level` field of a `ChunkColumn`.
@@ -205,7 +201,7 @@ pub struct ChunkLevel {
     #[serde(rename = "zPos")]
     pub z_pos: i32,
     /// `None` for chunks that haven't had biomes generated for them yet.
-    biomes: Option<Vec<i32>>
+    biomes: Option<Vec<i32>>,
 }
 
 impl ChunkColumn {
@@ -219,7 +215,7 @@ impl ChunkColumn {
         Ok(match compression {
             [1] => nbt::from_gzip_reader(data_cursor.take(len as u64)).map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Nbt(e) })?,
             [2] => nbt::from_zlib_reader(data_cursor.take(len as u64)).map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Nbt(e) })?,
-            [compression] => return Err(ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::UnknownCompressionType(compression) })
+            [compression] => return Err(ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::UnknownCompressionType(compression) }),
         })
     }
 
