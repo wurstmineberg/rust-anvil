@@ -156,27 +156,30 @@ impl<'a> Iterator for RegionIter<'a> {
 }
 
 /// An error returned by functions that construct `ChunkColumn`s.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("failed to decode chunk column {}, {}: {kind}", .coords[0], .coords[1])]
 pub struct ChunkColumnDecodeError {
     /// The chunk coordinates where the error occurred.
     pub coords: [i32; 2],
     /// Information about what kind of error occurred.
-    pub kind: ChunkColumnDecodeErrorKind,
+    #[source] pub kind: ChunkColumnDecodeErrorKind,
 }
 
 /// The contents of a `ChunkColumnDecodeError`.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ChunkColumnDecodeErrorKind {
     #[allow(missing_docs)]
-    Io(&'static str, io::Error),
+    #[error("{1}")]
+    Io(&'static str, #[source] io::Error),
     #[allow(missing_docs)]
-    Nbt(nbt::Error),
+    #[error(transparent)] Nbt(nbt::Error),
     /// Chunk columns are stored using different types of compression inside `.mca` files. The following compression types are currently implemented:
     ///
     /// 1. gzip
     /// 2. zlib
     ///
     /// If a chunk column with a different compression type is encountered, this error is returned, containing the compression type ID.
+    #[error("unknown compression type: {0}")]
     UnknownCompressionType(u8),
 }
 
