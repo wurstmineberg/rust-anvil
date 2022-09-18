@@ -6,6 +6,8 @@
 
 use {
     std::{
+        array,
+        collections::HashMap,
         fmt,
         fs::File,
         io::{
@@ -54,6 +56,7 @@ impl Region {
         let (_, rx, rz) = regex_captures!("^r\\.(-?[0-9]+)\\.(-?[0-9]+)\\.mca$", path.as_ref().file_name().ok_or(RegionDecodeError::InvalidFileName)?.to_str().ok_or(RegionDecodeError::InvalidFileName)?).ok_or(RegionDecodeError::InvalidFileName)?;
         let coords = [rx.parse()?, rz.parse()?];
         let mut file = File::open(path)?;
+        // https://minecraft.fandom.com/wiki/Region_file_format#Header
         let mut locations = [(0, 0); 1024];
         for i in 0..1024 {
             let mut offset = [0; 3];
@@ -183,32 +186,71 @@ pub enum ChunkColumnDecodeErrorKind {
     UnknownCompressionType(u8),
 }
 
-/// A chunk column represents 16 chunks stacked vertically, or 16×256×16 blocks.
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
-pub struct ChunkColumn {
-    /// The format of `level` may have different semantics depending on this value.
+struct ChunkColumnInner {
     pub data_version: i32,
-    /// The data of this chunk column, with contents depending on `data_version`.
-    pub level: ChunkLevel,
+    #[serde(rename = "xPos")]
+    x_pos: Option<i32>,
+    #[serde(rename = "zPos")]
+    z_pos: Option<i32>,
+    level: Option<ChunkLevel>,
+    #[serde(rename = "sections", default)]
+    sections: Vec<ChunkSectionData>,
 }
 
-/// The contents of the `level` field of a `ChunkColumn`.
+/// The contents of the `level` field of a `ChunkColumnInner`.
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
-pub struct ChunkLevel {
+struct ChunkLevel {
     /// The x chunk coordinate of this chunk, i.e. the block coordinates of its westernmost blocks divided by 16.
     #[serde(rename = "xPos")]
-    pub x_pos: i32,
+    x_pos: i32,
     /// The z chunk coordinate of this chunk, i.e. the block coordinates of its northernmost blocks divided by 16.
     #[serde(rename = "zPos")]
+    z_pos: i32,
+    /// `None` for chunks that haven't had biomes generated for them yet.
+    biomes: Option<Vec<i32>>,
+    sections: Vec<ChunkSectionData>,
+}
+
+impl TryFrom<ChunkColumnInner> for ChunkColumn {
+    type Error = &'static str;
+
+    fn try_from(ChunkColumnInner { data_version, x_pos, z_pos, level, sections }: ChunkColumnInner) -> Result<Self, &'static str> {
+        Ok(if let Some(ChunkLevel { x_pos, z_pos, biomes, sections }) = level {
+            Self {
+                sections: sections.into_iter().map(|data| ChunkSection { data_version, data }).collect(),
+                x_pos, z_pos, biomes,
+            }
+        } else {
+            Self {
+                x_pos: x_pos.ok_or("missing xPos field")?,
+                z_pos: z_pos.ok_or("missing zPos field")?,
+                biomes: None, //TODO
+                sections: sections.into_iter().map(|data| ChunkSection { data_version, data}).collect(),
+            }
+        })
+    }
+}
+
+/// A chunk column represents 16 chunks stacked vertically, or 16×256×16 blocks.
+#[derive(Deserialize)]
+#[serde(try_from = "ChunkColumnInner")]
+pub struct ChunkColumn {
+    /// The x chunk coordinate of this chunk, i.e. the block coordinates of its westernmost blocks divided by 16.
+    pub x_pos: i32,
+    /// The z chunk coordinate of this chunk, i.e. the block coordinates of its northernmost blocks divided by 16.
     pub z_pos: i32,
     /// `None` for chunks that haven't had biomes generated for them yet.
     biomes: Option<Vec<i32>>,
+    /// The vertical 16x16x16 sections, or “chunks”, of this chunk column.
+    pub sections: Vec<ChunkSection>,
 }
 
 impl ChunkColumn {
     fn new(coords: [i32; 2], data: Vec<u8>) -> Result<ChunkColumn, ChunkColumnDecodeError> {
+        // https://minecraft.fandom.com/wiki/Region_file_format#Payload
         let mut data_cursor = &*data;
         let mut len = [0; 4];
         data_cursor.read_exact(&mut len).map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Io("read compressed length", e) })?;
@@ -223,7 +265,7 @@ impl ChunkColumn {
     }
 
     fn coords_to_relative(&self, [x, y, z]: [i32; 3]) -> Result<[u8; 3], [i32; 3]> {
-        if x >= self.level.x_pos << 4 && x < (self.level.x_pos + 1) << 4 && y >= 0 && y < 256 && z >= self.level.z_pos << 4 && z < (self.level.z_pos + 1) << 4 {
+        if x >= self.x_pos << 4 && x < (self.x_pos + 1) << 4 && y >= 0 && y < 256 && z >= self.z_pos << 4 && z < (self.z_pos + 1) << 4 {
             Ok([x as u8 & 15, y as u8, z as u8 & 15])
         } else {
             Err([x, y, z])
@@ -238,7 +280,7 @@ impl ChunkColumn {
     ///
     /// If the chunk does not have the `Biomes` tag, `Err(None)` is returned. This can happen for a chunk on the edge of the generated world where the biomes haven't been generated.
     pub fn biomes(&self) -> Result<[[[Biome; 16]; 16]; 256], Option<i32>> {
-        let biomes = if let Some(ref biomes) = self.level.biomes {
+        let biomes = if let Some(ref biomes) = self.biomes {
             biomes
         } else {
             return Err(None)
@@ -280,7 +322,7 @@ impl ChunkColumn {
     ///
     /// This method panics if the coordinates are not in this chunk column (including a y coordinate below 0 or above 255).
     pub fn biome_at(&self, coords: [i32; 3]) -> Result<Biome, Option<i32>> {
-        let biomes = if let Some(ref biomes) = self.level.biomes {
+        let biomes = if let Some(ref biomes) = self.biomes {
             biomes
         } else {
             return Err(None)
@@ -293,6 +335,88 @@ impl ChunkColumn {
         }];
         Biome::from_id(id).ok_or(Some(id))
     }
+
+    /// Returns the [`ChunkSection`] with the given chunk y coordinate.
+    pub fn section_at(&self, y: i8) -> Option<&ChunkSection> {
+        self.sections.iter().find(|section| section.data.y == y)
+    }
+
+    /// Returns the [`ChunkSection`] with the given chunk y coordinate.
+    pub fn into_section_at(self, y: i8) -> Option<ChunkSection> {
+        self.sections.into_iter().find(|section| section.data.y == y)
+    }
+}
+
+/// A 16x16x16 chunk.
+pub struct ChunkSection {
+    data_version: i32,
+    data: ChunkSectionData,
+}
+
+#[derive(Deserialize)]
+struct ChunkSectionData {
+    #[serde(rename = "Y")]
+    y: i8,
+    block_states: BlockStates,
+}
+
+#[derive(Deserialize)]
+struct BlockStates {
+    palette: Vec<BlockState>,
+    data: Option<Vec<i64>>,
+}
+
+impl ChunkSection {
+    /// # Panics
+    ///
+    /// If the data is in an invalid format.
+    pub fn blocks(&self) -> [[[&BlockState; 16]; 16]; 16] {
+        array::from_fn(|y| array::from_fn(|z| array::from_fn(|x| {
+            if self.data.block_states.palette.len() == 1 {
+                &self.data.block_states.palette[0]
+            } else {
+                let data = self.data.block_states.data.as_ref().expect("no block state data with a palette size ≠ 1");
+                let block_index = 256 * y + 16 * z + x;
+                let bits_per_index = 4.max(usize::BITS - (self.data.block_states.palette.len() - 1).leading_zeros());
+                let index = if self.data_version >= 2529 { // starting in 20w17a, indices are no longer split across multiple longs
+                    let indexes_per_long = 64 / bits_per_index as usize;
+                    let containing_long = block_index / indexes_per_long;
+                    let index_offset = block_index % indexes_per_long;
+                    let bit_offset = index_offset * bits_per_index as usize;
+                    let mask = 2usize.pow(bits_per_index) - 1;
+                    (data[containing_long] >> bit_offset) as usize & mask
+                } else {
+                    let bit_index = block_index * bits_per_index as usize;
+                    let containing_index = bit_index / 64;
+                    let offset = bit_index % 64;
+                    let bit_end_index = bit_index + bits_per_index as usize;
+                    let containing_end_index = bit_end_index / 64;
+                    let source_fields = containing_end_index - containing_index;
+                    let mask = 2usize.pow(bits_per_index) - 1;
+                    let mut index = 0;
+                    for ii in 0..=source_fields {
+                        let state_index = containing_index + ii;
+                        let field = data[state_index] % 2i64.pow(64);
+                        let part = field << (64 * ii);
+                        index |= part;
+                    }
+                    (index >> offset) as usize & mask
+                };
+                &self.data.block_states.palette[index]
+            }
+        })))
+    }
+}
+
+/// A block.
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct BlockState {
+    /// The [resource location](https://minecraft.fandom.com/wiki/Resource_location) of the block.
+    pub name: String,
+    /// The [block state](https://minecraft.fandom.com/wiki/Block_states) properties of the block.
+    #[serde(default)]
+    pub properties: HashMap<String, String>,
 }
 
 #[test]
