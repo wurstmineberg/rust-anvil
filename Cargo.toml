@@ -8,11 +8,19 @@ keywords = ["anvil", "minecraft", "region"]
 license = "MIT"
 edition = "2021"
 
+[lints.rust]
+missing_docs = "deny"
+rust_2018_idioms = "deny"
+unsafe_code = "forbid"
+unused = "deny"
+unused_crate_dependencies = "deny"
+unused_import_braces = "deny"
+unused_lifetimes = "deny"
+unused_qualifications = "deny"
+warnings = "deny"
+
 [dependencies]
 hematite-nbt = "0.5"
-lazy-regex = "2"
+lazy-regex = "3"
+serde = { version = "1", features = ["derive"] }
 thiserror = "1"
-
-[dependencies.serde]
-version = "1"
-features = ["derive"]
