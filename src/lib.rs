@@ -54,7 +54,7 @@ impl Region {
         let (_, rx, rz) = regex_captures!("^r\\.(-?[0-9]+)\\.(-?[0-9]+)\\.mca$", path.as_ref().file_name().ok_or(RegionDecodeError::InvalidFileName)?.to_str().ok_or(RegionDecodeError::InvalidFileName)?).ok_or(RegionDecodeError::InvalidFileName)?;
         let coords = [rx.parse()?, rz.parse()?];
         let mut file = File::open(path)?;
-        // https://minecraft.fandom.com/wiki/Region_file_format#Header
+        // https://minecraft.wiki/w/Region_file_format#Header
         let mut locations = [(0, 0); 1024];
         for i in 0..1024 {
             let mut offset = [0; 3];
@@ -185,16 +185,19 @@ pub enum ChunkColumnDecodeErrorKind {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
 struct ChunkColumnInner {
-    pub data_version: i32,
+    #[serde(rename = "DataVersion")]
+    data_version: i32,
     #[serde(rename = "xPos")]
     x_pos: Option<i32>,
     #[serde(rename = "zPos")]
     z_pos: Option<i32>,
+    #[serde(rename = "Level")]
     level: Option<ChunkLevel>,
-    #[serde(rename = "sections", default)]
+    #[serde(default)]
     sections: Vec<ChunkSectionData>,
+    #[serde(default)]
+    block_entities: Vec<BlockEntity>,
 }
 
 /// The contents of the `level` field of a `ChunkColumnInner`.
@@ -215,18 +218,19 @@ struct ChunkLevel {
 impl TryFrom<ChunkColumnInner> for ChunkColumn {
     type Error = &'static str;
 
-    fn try_from(ChunkColumnInner { data_version, x_pos, z_pos, level, sections }: ChunkColumnInner) -> Result<Self, &'static str> {
+    fn try_from(ChunkColumnInner { data_version, x_pos, z_pos, level, sections, block_entities }: ChunkColumnInner) -> Result<Self, &'static str> {
         Ok(if let Some(ChunkLevel { x_pos, z_pos, biomes, sections }) = level {
             Self {
                 sections: sections.into_iter().map(|data| ChunkSection { data_version, data }).collect(),
-                x_pos, z_pos, biomes,
+                x_pos, z_pos, biomes, block_entities,
             }
         } else {
             Self {
                 x_pos: x_pos.ok_or("missing xPos field")?,
                 z_pos: z_pos.ok_or("missing zPos field")?,
                 biomes: None, //TODO
-                sections: sections.into_iter().map(|data| ChunkSection { data_version, data}).collect(),
+                sections: sections.into_iter().map(|data| ChunkSection { data_version, data }).collect(),
+                block_entities,
             }
         })
     }
@@ -244,11 +248,13 @@ pub struct ChunkColumn {
     biomes: Option<Vec<i32>>,
     /// The vertical 16x16x16 sections, or “chunks”, of this chunk column.
     pub sections: Vec<ChunkSection>,
+    /// The [block entities](https://minecraft.wiki/w/Block_entity) in this chunk column.
+    pub block_entities: Vec<BlockEntity>,
 }
 
 impl ChunkColumn {
     fn new(coords: [i32; 2], data: Vec<u8>) -> Result<ChunkColumn, ChunkColumnDecodeError> {
-        // https://minecraft.fandom.com/wiki/Region_file_format#Payload
+        // https://minecraft.wiki/w/Region_file_format#Payload
         let mut data_cursor = &*data;
         let mut len = [0; 4];
         data_cursor.read_exact(&mut len).map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Io("read compressed length", e) })?;
@@ -355,10 +361,11 @@ pub struct ChunkSection {
 struct ChunkSectionData {
     #[serde(rename = "Y")]
     y: i8,
+    #[serde(default)]
     block_states: BlockStates,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct BlockStates {
     palette: Vec<BlockState>,
     data: Option<Vec<i64>>,
@@ -410,11 +417,27 @@ impl ChunkSection {
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct BlockState {
-    /// The [resource location](https://minecraft.fandom.com/wiki/Resource_location) of the block.
+    /// The [resource location](https://minecraft.wiki/w/Resource_location) of the block.
     pub name: String,
-    /// The [block state](https://minecraft.fandom.com/wiki/Block_states) properties of the block.
+    /// The [block state](https://minecraft.wiki/w/Block_states) properties of the block.
     #[serde(default)]
     pub properties: HashMap<String, String>,
+}
+
+/// A [block entity](https://minecraft.wiki/w/Block_entity).
+#[derive(Deserialize)]
+pub struct BlockEntity {
+    /// The [resource location](https://minecraft.wiki/w/Resource_location) of the block entity.
+    pub id: String,
+    /// The X coordinate of the block.
+    pub x: i32,
+    /// The Y coordinate of the block.
+    pub y: i32,
+    /// The Z coordinate of the block.
+    pub z: i32,
+    /// Data specific to the block type.
+    #[serde(flatten)]
+    pub rest: nbt::Map<String, nbt::Value>,
 }
 
 #[test]
