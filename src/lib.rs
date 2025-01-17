@@ -5,6 +5,7 @@
 use {
     std::{
         array,
+        borrow::Cow,
         collections::HashMap,
         fmt,
         fs::File,
@@ -375,14 +376,14 @@ impl ChunkSection {
     /// # Panics
     ///
     /// If the data is in an invalid format.
-    pub fn blocks(&self) -> [[[&BlockState; 16]; 16]; 16] {
-        array::from_fn(|y| array::from_fn(|z| array::from_fn(|x| {
-            if self.data.block_states.palette.len() == 1 {
-                &self.data.block_states.palette[0]
-            } else {
+    pub fn blocks(&self) -> [[[Cow<'_, BlockState>; 16]; 16]; 16] {
+        array::from_fn(|y| array::from_fn(|z| array::from_fn(|x| match &*self.data.block_states.palette {
+            [] => Cow::Owned(BlockState { name: format!("minecraft:air"), properties: HashMap::default() }),
+            [palette_entry] => Cow::Borrowed(palette_entry),
+            palette => {
                 let data = self.data.block_states.data.as_ref().expect("no block state data with a palette size ≠ 1");
                 let block_index = 256 * y + 16 * z + x;
-                let bits_per_index = 4.max(usize::BITS - (self.data.block_states.palette.len() - 1).leading_zeros());
+                let bits_per_index = 4.max(usize::BITS - (palette.len() - 1).leading_zeros());
                 let index = if self.data_version >= 2529 { // starting in 20w17a, indices are no longer split across multiple longs
                     let indexes_per_long = 64 / bits_per_index as usize;
                     let containing_long = block_index / indexes_per_long;
@@ -407,14 +408,14 @@ impl ChunkSection {
                     }
                     (index >> offset) as usize & mask
                 };
-                &self.data.block_states.palette[index]
+                Cow::Borrowed(&palette[index])
             }
         })))
     }
 }
 
 /// A block.
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct BlockState {
     /// The [resource location](https://minecraft.wiki/w/Resource_location) of the block.
