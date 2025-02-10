@@ -25,6 +25,17 @@ mod biome;
 
 pub use biome::Biome;
 
+/// A [dimension](https://minecraft.wiki/w/Dimension).
+#[derive(Clone, Copy)]
+pub enum Dimension {
+    /// The [Overworld](https://minecraft.wiki/w/Overworld).
+    Overworld,
+    /// The [Nether](https://minecraft.wiki/w/The_Nether).
+    Nether,
+    /// The [End](https://minecraft.wiki/w/The_End).
+    End,
+}
+
 /// An error returned by `Region::open`.
 #[derive(Debug, thiserror::Error)]
 pub enum RegionDecodeError {
@@ -51,7 +62,7 @@ impl Region {
     /// # Errors
     ///
     /// See the `RegionDecodeError` docs.
-    pub fn open(path: impl AsRef<Path>) -> Result<Region, RegionDecodeError> {
+    pub fn open(path: impl AsRef<Path>) -> Result<Region, RegionDecodeError> { //TODO add async variant
         let (_, rx, rz) = regex_captures!("^r\\.(-?[0-9]+)\\.(-?[0-9]+)\\.mca$", path.as_ref().file_name().ok_or(RegionDecodeError::InvalidFileName)?.to_str().ok_or(RegionDecodeError::InvalidFileName)?).ok_or(RegionDecodeError::InvalidFileName)?;
         let coords = [rx.parse()?, rz.parse()?];
         let mut file = File::open(path)?;
@@ -75,6 +86,22 @@ impl Region {
         }
         Ok(Region { coords, locations, /*timestamps,*/ file })
     }
+
+    /// Finds the region with the given dimension and region coordinates (i.e. the block coordinates of its northwesternmost block divided by 512) in the given world folder.
+    pub fn find(world_dir: impl AsRef<Path>, dimension: Dimension, [x, z]: [i32; 2]) -> Result<Option<Region>, RegionDecodeError> { //TODO add async variant
+        let dim_dir = match dimension {
+            Dimension::Overworld => world_dir.as_ref().join("region"),
+            Dimension::Nether => world_dir.as_ref().join("DIM-1").join("region"),
+            Dimension::End => world_dir.as_ref().join("DIM1").join("region"),
+        };
+        let region_path = dim_dir.join(format!("r.{x}.{z}.mca"));
+        Ok(if region_path.try_exists()? {
+            Some(Self::open(region_path)?)
+        } else {
+            None
+        })
+    }
+
 
     /// Returns a `ChunkColumn` in this region given its **absolute** chunk coordinates (i.e. the block coordinates of its northwesternmost block divided by 16).
     pub fn chunk_column(&self, [x, z]: [i32; 2]) -> Result<Option<ChunkColumn>, ChunkColumnDecodeError> {
@@ -373,12 +400,15 @@ struct BlockStates {
 }
 
 impl ChunkSection {
+    /// The y chunk coordinate of this chunk, i.e. the block coordinates of its lowest blocks divided by 16.
+    pub fn y(&self) -> i8 { self.data.y }
+
     /// # Panics
     ///
     /// If the data is in an invalid format.
     pub fn blocks(&self) -> [[[Cow<'_, BlockState>; 16]; 16]; 16] {
         array::from_fn(|y| array::from_fn(|z| array::from_fn(|x| match &*self.data.block_states.palette {
-            [] => Cow::Owned(BlockState { name: format!("minecraft:air"), properties: HashMap::default() }),
+            [] => Cow::Owned(BlockState::default()),
             [palette_entry] => Cow::Borrowed(palette_entry),
             palette => {
                 let data = self.data.block_states.data.as_ref().expect("no block state data with a palette size ≠ 1");
@@ -419,10 +449,19 @@ impl ChunkSection {
 #[serde(rename_all = "PascalCase")]
 pub struct BlockState {
     /// The [resource location](https://minecraft.wiki/w/Resource_location) of the block.
-    pub name: String,
+    pub name: Cow<'static, str>,
     /// The [block state](https://minecraft.wiki/w/Block_states) properties of the block.
     #[serde(default)]
     pub properties: HashMap<String, String>,
+}
+
+impl Default for BlockState {
+    fn default() -> Self {
+        Self {
+            name: Cow::Borrowed("minecraft:air"),
+            properties: HashMap::default(),
+        }
+    }
 }
 
 /// A [block entity](https://minecraft.wiki/w/Block_entity).
