@@ -14,9 +14,11 @@ use {
             SeekFrom,
             prelude::*,
         },
+        iter,
         num::ParseIntError,
         path::Path,
     },
+    itertools::Itertools as _,
     lazy_regex::regex_captures,
     serde::Deserialize,
 };
@@ -102,11 +104,25 @@ impl Region {
         })
     }
 
+    /// Iterates over all regions in the given dimension of the given world folder.
+    pub fn all(world_dir: impl AsRef<Path>, dimension: Dimension) -> impl Iterator<Item = Result<Region, RegionDecodeError>> { //TODO add async variant
+        let dim_dir = match dimension {
+            Dimension::Overworld => world_dir.as_ref().join("region"),
+            Dimension::Nether => world_dir.as_ref().join("DIM-1").join("region"),
+            Dimension::End => world_dir.as_ref().join("DIM1").join("region"),
+        };
+        iter::once(dim_dir.read_dir())
+            .flatten_ok()
+            .map(|res| res?)
+            .map_ok(|entry| Self::open(entry.path()))
+            .map(|res| res?)
+            .filter(|res| res.as_ref().err().is_none_or(|e| !matches!(e, RegionDecodeError::InvalidFileName))) // ignore non-Anvil files
+    }
 
     /// Returns a `ChunkColumn` in this region given its **absolute** chunk coordinates (i.e. the block coordinates of its northwesternmost block divided by 16).
     pub fn chunk_column(&self, [x, z]: [i32; 2]) -> Result<Option<ChunkColumn>, ChunkColumnDecodeError> {
-        let x_offset = x & 31; //TODO make sure coords are in this region
-        let z_offset = z & 31; //TODO make sure coords are in this region
+        let x_offset = x.rem_euclid(32); //TODO make sure coords are in this region
+        let z_offset = z.rem_euclid(32); //TODO make sure coords are in this region
         self.chunk_column_relative([x_offset as u8, z_offset as u8])
     }
 
@@ -218,6 +234,8 @@ struct ChunkColumnInner {
     data_version: i32,
     #[serde(rename = "xPos")]
     x_pos: Option<i32>,
+    #[serde(rename = "yPos", default)]
+    y_pos: i32,
     #[serde(rename = "zPos")]
     z_pos: Option<i32>,
     #[serde(rename = "Level")]
@@ -226,6 +244,8 @@ struct ChunkColumnInner {
     sections: Vec<ChunkSectionData>,
     #[serde(default)]
     block_entities: Vec<BlockEntity>,
+    #[serde(default)]
+    pub heightmaps: HashMap<String, Vec<i64>>,
 }
 
 /// The contents of the `level` field of a `ChunkColumnInner`.
@@ -246,11 +266,24 @@ struct ChunkLevel {
 impl TryFrom<ChunkColumnInner> for ChunkColumn {
     type Error = &'static str;
 
-    fn try_from(ChunkColumnInner { data_version, x_pos, z_pos, level, sections, block_entities }: ChunkColumnInner) -> Result<Self, &'static str> {
+    fn try_from(ChunkColumnInner { data_version, x_pos, y_pos, z_pos, level, sections, block_entities, heightmaps }: ChunkColumnInner) -> Result<Self, &'static str> {
+        let heightmaps = heightmaps.into_iter()
+            .map(|(name, heightmap)| (name, (0..16).map(|z| (0..16).map(|x| {
+                let block_index = 16 * z + x;
+                let bits_per_index = 9;
+                let indexes_per_long = 64 / bits_per_index as usize;
+                let containing_long = block_index / indexes_per_long;
+                let index_offset = block_index % indexes_per_long;
+                let bit_offset = index_offset * bits_per_index as usize;
+                let mask = 2i32.pow(bits_per_index) - 1;
+                let distance_from_bottom = (heightmap[containing_long] >> bit_offset) as i32 & mask;
+                distance_from_bottom + 16 * y_pos
+            }).collect_vec().try_into().unwrap()).collect_vec().try_into().unwrap()))
+            .collect();
         Ok(if let Some(ChunkLevel { x_pos, z_pos, biomes, sections }) = level {
             Self {
                 sections: sections.into_iter().map(|data| ChunkSection { data_version, data }).collect(),
-                x_pos, z_pos, biomes, block_entities,
+                x_pos, y_pos, z_pos, biomes, block_entities, heightmaps,
             }
         } else {
             Self {
@@ -258,7 +291,7 @@ impl TryFrom<ChunkColumnInner> for ChunkColumn {
                 z_pos: z_pos.ok_or("missing zPos field")?,
                 biomes: None, //TODO
                 sections: sections.into_iter().map(|data| ChunkSection { data_version, data }).collect(),
-                block_entities,
+                y_pos, block_entities, heightmaps,
             }
         })
     }
@@ -270,6 +303,8 @@ impl TryFrom<ChunkColumnInner> for ChunkColumn {
 pub struct ChunkColumn {
     /// The x chunk coordinate of this chunk, i.e. the block coordinates of its westernmost blocks divided by 16.
     pub x_pos: i32,
+    /// The minimum y chunk coordinate of this chunk, i.e. the block coordinates of its lowest blocks divided by 16.
+    pub y_pos: i32,
     /// The z chunk coordinate of this chunk, i.e. the block coordinates of its northernmost blocks divided by 16.
     pub z_pos: i32,
     /// `None` for chunks that haven't had biomes generated for them yet.
@@ -278,6 +313,8 @@ pub struct ChunkColumn {
     pub sections: Vec<ChunkSection>,
     /// The [block entities](https://minecraft.wiki/w/Block_entity) in this chunk column.
     pub block_entities: Vec<BlockEntity>,
+    /// The [heightmaps](https://minecraft.wiki/w/Heightmap) for this chunk column.
+    pub heightmaps: HashMap<String, [[i32; 16]; 16]>,
 }
 
 impl ChunkColumn {
@@ -403,16 +440,31 @@ impl ChunkSection {
     /// The y chunk coordinate of this chunk, i.e. the block coordinates of its lowest blocks divided by 16.
     pub fn y(&self) -> i8 { self.data.y }
 
+    /// Returns a `BlockState` in this chunk given its **absolute** coordinates.
+    ///
     /// # Panics
     ///
     /// If the data is in an invalid format.
-    pub fn blocks(&self) -> [[[Cow<'_, BlockState>; 16]; 16]; 16] {
-        array::from_fn(|y| array::from_fn(|z| array::from_fn(|x| match &*self.data.block_states.palette {
+    pub fn block(&self, [x, y, z]: [i32; 3]) -> Cow<'_, BlockState> {
+        let x_offset = x.rem_euclid(16); //TODO make sure coords are in this chunk
+        let y_offset = y.rem_euclid(16); //TODO make sure coords are in this chunk
+        let z_offset = z.rem_euclid(16); //TODO make sure coords are in this chunk
+        self.block_relative([x_offset as u8, y_offset as u8, z_offset as u8])
+    }
+
+    /// Returns a `BlockState` in this chunk given its coordinates **relative** to the bottom northwest corner of this chunk.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any of the given coordinates is not less than 16 or if the data is in an invalid format.
+    pub fn block_relative(&self, [x, y, z]: [u8; 3]) -> Cow<'_, BlockState> {
+        assert!(x < 16 && y < 16 && z < 16);
+        match &*self.data.block_states.palette {
             [] => Cow::Owned(BlockState::default()),
             [palette_entry] => Cow::Borrowed(palette_entry),
             palette => {
                 let data = self.data.block_states.data.as_ref().expect("no block state data with a palette size ≠ 1");
-                let block_index = 256 * y + 16 * z + x;
+                let block_index = 256 * y as usize + 16 * z as usize + x as usize;
                 let bits_per_index = 4.max(usize::BITS - (palette.len() - 1).leading_zeros());
                 let index = if self.data_version >= 2529 { // starting in 20w17a, indices are no longer split across multiple longs
                     let indexes_per_long = 64 / bits_per_index as usize;
@@ -440,7 +492,20 @@ impl ChunkSection {
                 };
                 Cow::Borrowed(&palette[index])
             }
-        })))
+        }
+    }
+
+    /// # Performance
+    ///
+    /// This function simply iterates over all block coordinates in this chunk and calls [`Self::block_relative`] for each of them.
+    /// Additionally, creating the arrays has significant performance overhead.
+    /// Therefore, when writing performance-sensitive code, you should consider calling `block_relative` directly instead.
+    ///
+    /// # Panics
+    ///
+    /// If the data is in an invalid format.
+    pub fn blocks(&self) -> [[[Cow<'_, BlockState>; 16]; 16]; 16] {
+        array::from_fn(|y| array::from_fn(|z| array::from_fn(|x| self.block_relative([x as u8, y as u8, z as u8]))))
     }
 }
 
