@@ -180,13 +180,13 @@ impl<'a> Iterator for RegionIter<'a> {
 
     fn next(&mut self) -> Option<Result<ChunkColumn, ChunkColumnDecodeError>> {
         loop {
+            if self.z_offset >= 32 { return None }
             let old_offsets = [self.x_offset, self.z_offset];
             self.x_offset += 1;
             if self.x_offset >= 32 {
                 self.z_offset += 1;
                 self.x_offset = 0;
             }
-            if self.z_offset >= 32 { return None }
             match self.region.chunk_column_relative(old_offsets) {
                 Ok(Some(col)) => return Some(Ok(col)),
                 Ok(None) => {}
