@@ -24,4 +24,4 @@ hematite-nbt = "0.5"
 itertools = "0.14.0"
 lazy-regex = "3"
 serde = { version = "1", features = ["derive"] }
-thiserror = "1"
+thiserror = "2"
