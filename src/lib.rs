@@ -29,10 +29,11 @@ mod biome;
 pub use biome::Biome;
 
 /// A [dimension](https://minecraft.wiki/w/Dimension).
-#[derive(Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "async-proto", derive(Protocol))]
 pub enum Dimension {
     /// The [Overworld](https://minecraft.wiki/w/Overworld).
+    #[default]
     Overworld,
     /// The [Nether](https://minecraft.wiki/w/The_Nether).
     Nether,
