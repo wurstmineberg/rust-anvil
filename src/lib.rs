@@ -29,7 +29,7 @@ mod biome;
 pub use biome::Biome;
 
 /// A [dimension](https://minecraft.wiki/w/Dimension).
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "async-proto", derive(Protocol))]
 pub enum Dimension {
     /// The [Overworld](https://minecraft.wiki/w/Overworld).
@@ -513,7 +513,8 @@ impl ChunkSection {
 }
 
 /// A block.
-#[derive(Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[cfg_attr(feature = "async-proto", derive(Protocol))]
 #[serde(rename_all = "PascalCase")]
 pub struct BlockState {
     /// The [resource location](https://minecraft.wiki/w/Resource_location) of the block.
