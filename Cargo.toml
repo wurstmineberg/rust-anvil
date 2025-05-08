@@ -6,7 +6,7 @@ description = "A parser for Minecraft's Anvil world format."
 readme = "README.md"
 keywords = ["anvil", "minecraft", "region"]
 license = "MIT"
-edition = "2021"
+edition = "2024"
 
 [lints.rust]
 missing_docs = "deny"
