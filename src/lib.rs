@@ -22,6 +22,7 @@ use {
     lazy_regex::regex_captures,
     serde::Deserialize,
 };
+#[cfg(feature = "async-proto")] use async_proto::Protocol;
 
 mod biome;
 
@@ -29,6 +30,7 @@ pub use biome::Biome;
 
 /// A [dimension](https://minecraft.wiki/w/Dimension).
 #[derive(Clone, Copy)]
+#[cfg_attr(feature = "async-proto", derive(Protocol))]
 pub enum Dimension {
     /// The [Overworld](https://minecraft.wiki/w/Overworld).
     Overworld,

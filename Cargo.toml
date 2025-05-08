@@ -20,6 +20,7 @@ unused_qualifications = "deny"
 warnings = "deny"
 
 [dependencies]
+async-proto = { version = "0.25.1", optional = true }
 hematite-nbt = "0.5"
 itertools = "0.14.0"
 lazy-regex = "3"
