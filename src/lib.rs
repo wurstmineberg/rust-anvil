@@ -21,12 +21,20 @@ use {
     itertools::Itertools as _,
     lazy_regex::regex_captures,
     serde::Deserialize,
+    serde_with::{
+        DisplayFromStr,
+        serde_as,
+    },
 };
 #[cfg(feature = "async-proto")] use async_proto::Protocol;
 
 mod biome;
+mod block;
 
-pub use biome::Biome;
+pub use crate::{
+    biome::Biome,
+    block::BlockId,
+};
 
 /// A [dimension](https://minecraft.wiki/w/Dimension).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
@@ -513,24 +521,17 @@ impl ChunkSection {
 }
 
 /// A block.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde_as]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 #[cfg_attr(feature = "async-proto", derive(Protocol))]
 #[serde(rename_all = "PascalCase")]
 pub struct BlockState {
     /// The [resource location](https://minecraft.wiki/w/Resource_location) of the block.
-    pub name: Cow<'static, str>,
+    #[serde_as(as = "DisplayFromStr")]
+    pub name: BlockId,
     /// The [block state](https://minecraft.wiki/w/Block_states) properties of the block.
     #[serde(default)]
     pub properties: HashMap<String, String>,
-}
-
-impl Default for BlockState {
-    fn default() -> Self {
-        Self {
-            name: Cow::Borrowed("minecraft:air"),
-            properties: HashMap::default(),
-        }
-    }
 }
 
 /// A [block entity](https://minecraft.wiki/w/Block_entity).
