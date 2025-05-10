@@ -15,6 +15,7 @@ use {
             PathBuf,
         },
     },
+    chrono::prelude::*,
     futures::{
         future,
         stream::{
@@ -81,8 +82,10 @@ pub struct Region {
     /// The region coordinates of this region, i.e. the block coordinates of its northwesternmost block column divided by 512.
     pub coords: [i32; 2],
     locations: [(u32, u8); 1024],
-    //timestamps: [u32; 1024],
-    file: File,
+    /// The last modification times of the chunks, listed north-to-south in west-to-east rows of chunks.
+    pub timestamps: [DateTime<Utc>; 1024],
+    /// The underlying file.
+    pub file: File,
 }
 
 impl Region {
@@ -107,13 +110,13 @@ impl Region {
             let [sector_count] = sector_count;
             locations[i] = (offset, sector_count);
         }
-        let mut timestamps = [0; 1024];
+        let mut timestamps = [DateTime::UNIX_EPOCH; 1024];
         for i in 0..1024 {
             let mut timestamp = [0; 4];
             file.read_exact(&mut timestamp).await?;
-            timestamps[i] = u32::from_be_bytes(timestamp);
+            timestamps[i] = DateTime::from_timestamp(u32::from_be_bytes(timestamp).into(), 0).expect("32-bit Unix timestamp should be in range of chrono DateTime");
         }
-        Ok(Region { coords, locations, /*timestamps,*/ file })
+        Ok(Region { coords, locations, timestamps, file })
     }
 
     /// Finds the region with the given dimension and region coordinates (i.e. the block coordinates of its northwesternmost block divided by 512) in the given world folder.
