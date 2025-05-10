@@ -8,15 +8,21 @@ use {
         borrow::Cow,
         collections::HashMap,
         fmt,
-        fs::File,
-        io::{
-            self,
-            SeekFrom,
-            prelude::*,
-        },
-        iter,
+        io::SeekFrom,
         num::ParseIntError,
-        path::Path,
+        path::{
+            Path,
+            PathBuf,
+        },
+    },
+    futures::{
+        future,
+        stream::{
+            self,
+            Stream,
+            StreamExt as _,
+            TryStreamExt as _,
+        },
     },
     itertools::Itertools as _,
     lazy_regex::regex_captures,
@@ -24,6 +30,16 @@ use {
     serde_with::{
         DisplayFromStr,
         serde_as,
+    },
+    tokio::{
+        fs::{
+            self,
+            File,
+        },
+        io::{
+            AsyncReadExt as _,
+            AsyncSeekExt as _,
+        },
     },
 };
 #[cfg(feature = "async-proto")] use async_proto::Protocol;
@@ -55,7 +71,7 @@ pub enum RegionDecodeError {
     /// The given filename did not match the region coordinates format, `r.<x>.<z>.mca`.
     #[error("the given filename did not match the region coordinates format, `r.<x>.<z>.mca`")]
     InvalidFileName,
-    #[allow(missing_docs)] #[error(transparent)] Io(#[from] io::Error),
+    #[allow(missing_docs)] #[error(transparent)] Io(#[from] tokio::io::Error),
     /// The x or z coordinate did not fit into an `i32`.
     #[error(transparent)] ParseInt(#[from] ParseIntError),
 }
@@ -75,33 +91,33 @@ impl Region {
     /// # Errors
     ///
     /// See the `RegionDecodeError` docs.
-    pub fn open(path: impl AsRef<Path>) -> Result<Region, RegionDecodeError> { //TODO add async variant
+    pub async fn open(path: impl AsRef<Path>) -> Result<Region, RegionDecodeError> {
         let (_, rx, rz) = regex_captures!("^r\\.(-?[0-9]+)\\.(-?[0-9]+)\\.mca$", path.as_ref().file_name().ok_or(RegionDecodeError::InvalidFileName)?.to_str().ok_or(RegionDecodeError::InvalidFileName)?).ok_or(RegionDecodeError::InvalidFileName)?;
         let coords = [rx.parse()?, rz.parse()?];
-        let mut file = File::open(path)?;
+        let mut file = File::open(path).await?;
         // https://minecraft.wiki/w/Region_file_format#Header
         let mut locations = [(0, 0); 1024];
         for i in 0..1024 {
             let mut offset = [0; 3];
-            file.read_exact(&mut offset)?;
+            file.read_exact(&mut offset).await?;
             let [o0, o1, o2] = offset;
             let offset = u32::from_be_bytes([0, o0, o1, o2]);
             let mut sector_count = [0; 1];
-            file.read_exact(&mut sector_count)?;
+            file.read_exact(&mut sector_count).await?;
             let [sector_count] = sector_count;
             locations[i] = (offset, sector_count);
         }
         let mut timestamps = [0; 1024];
         for i in 0..1024 {
             let mut timestamp = [0; 4];
-            file.read_exact(&mut timestamp)?;
+            file.read_exact(&mut timestamp).await?;
             timestamps[i] = u32::from_be_bytes(timestamp);
         }
         Ok(Region { coords, locations, /*timestamps,*/ file })
     }
 
     /// Finds the region with the given dimension and region coordinates (i.e. the block coordinates of its northwesternmost block divided by 512) in the given world folder.
-    pub fn find(world_dir: impl AsRef<Path>, dimension: Dimension, [x, z]: [i32; 2]) -> Result<Option<Region>, RegionDecodeError> { //TODO add async variant
+    pub async fn find(world_dir: impl AsRef<Path>, dimension: Dimension, [x, z]: [i32; 2]) -> Result<Option<Region>, RegionDecodeError> {
         let dim_dir = match dimension {
             Dimension::Overworld => world_dir.as_ref().join("region"),
             Dimension::Nether => world_dir.as_ref().join("DIM-1").join("region"),
@@ -109,32 +125,43 @@ impl Region {
         };
         let region_path = dim_dir.join(format!("r.{x}.{z}.mca"));
         Ok(if region_path.try_exists()? {
-            Some(Self::open(region_path)?)
+            Some(Self::open(region_path).await?)
         } else {
             None
         })
     }
 
     /// Iterates over all regions in the given dimension of the given world folder.
-    pub fn all(world_dir: impl AsRef<Path>, dimension: Dimension) -> impl Iterator<Item = Result<Region, RegionDecodeError>> { //TODO add async variant
+    pub fn all(world_dir: impl AsRef<Path>, dimension: Dimension) -> impl Stream<Item = Result<Region, RegionDecodeError>> {
+        enum State {
+            Init(PathBuf),
+            Continued(PathBuf, fs::ReadDir),
+        }
+
         let dim_dir = match dimension {
             Dimension::Overworld => world_dir.as_ref().join("region"),
             Dimension::Nether => world_dir.as_ref().join("DIM-1").join("region"),
             Dimension::End => world_dir.as_ref().join("DIM1").join("region"),
         };
-        iter::once(dim_dir.read_dir())
-            .flatten_ok()
-            .map(|res| res?)
-            .map_ok(|entry| Self::open(entry.path()))
-            .map(|res| res?)
-            .filter(|res| res.as_ref().err().is_none_or(|e| !matches!(e, RegionDecodeError::InvalidFileName))) // ignore non-Anvil files
+        let read_dir = stream::try_unfold(State::Init(dim_dir), |state| async move {
+            Ok(match state {
+                State::Init(dim_dir) => {
+                    let mut read_dir = fs::read_dir(&dim_dir).await?;
+                    read_dir.next_entry().await?.map(|entry| (entry, State::Continued(dim_dir, read_dir)))
+                }
+                State::Continued(path, mut read_dir) => read_dir.next_entry().await?.map(|entry| (entry, State::Continued(path, read_dir))),
+            })
+        });
+        read_dir
+            .and_then(|entry| Self::open(entry.path()))
+            .filter(|res| future::ready(res.as_ref().err().is_none_or(|e| !matches!(e, RegionDecodeError::InvalidFileName)))) // ignore non-Anvil files
     }
 
     /// Returns a `ChunkColumn` in this region given its **absolute** chunk coordinates (i.e. the block coordinates of its northwesternmost block divided by 16).
-    pub fn chunk_column(&self, [x, z]: [i32; 2]) -> Result<Option<ChunkColumn>, ChunkColumnDecodeError> {
+    pub async fn chunk_column(&mut self, [x, z]: [i32; 2]) -> Result<Option<ChunkColumn>, ChunkColumnDecodeError> {
         let x_offset = x.rem_euclid(32); //TODO make sure coords are in this region
         let z_offset = z.rem_euclid(32); //TODO make sure coords are in this region
-        self.chunk_column_relative([x_offset as u8, z_offset as u8])
+        self.chunk_column_relative([x_offset as u8, z_offset as u8]).await
     }
 
     /// Returns a `ChunkColumn` in this region given its chunk coordinates (i.e. the block coordinates of its northwesternmost block divided by 16) **relative** to the northwest corner of this region.
@@ -142,18 +169,38 @@ impl Region {
     /// # Panics
     ///
     /// Panics if either of the given coordinates is not less than 32.
-    pub fn chunk_column_relative(&self, [x_offset, z_offset]: [u8; 2]) -> Result<Option<ChunkColumn>, ChunkColumnDecodeError> {
+    pub async fn chunk_column_relative(&mut self, [x_offset, z_offset]: [u8; 2]) -> Result<Option<ChunkColumn>, ChunkColumnDecodeError> {
         assert!(x_offset < 32 && z_offset < 32);
         let coords = [self.coords[0] * 32 + x_offset as i32, self.coords[1] * 32 + z_offset as i32];
         let (offset, sector_count) = self.locations[x_offset as usize + z_offset as usize * 32];
         if offset == 0 { return Ok(None) }
-        (&self.file).seek(SeekFrom::Start(4096 * u64::from(offset))).map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Io("seek", e) })?;
+        self.file.seek(SeekFrom::Start(4096 * u64::from(offset))).await.map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Io("seek", e) })?;
         // The Minecraft wiki says:
         // > Minecraft always pads the last chunk's data to be a multiple-of-4096B in length
         // But this seems to no longer be the case in Minecraft 1.16.1, so this implementation simply reads until EOF if the remaining file is shorter than indicated by sector_count.
         let mut data = Vec::default();
-        (&self.file).take(4096 * sector_count as u64).read_to_end(&mut data).map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Io("read chunk column", e) })?;
+        (&mut self.file).take(4096 * sector_count as u64).read_to_end(&mut data).await.map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Io("read chunk column", e) })?;
         Ok(Some(ChunkColumn::new(coords, data)?))
+    }
+
+    /// Returns a stream over the chunk columns in this region.
+    pub fn chunk_columns<'a>(&'a mut self) -> impl Stream<Item = Result<ChunkColumn, ChunkColumnDecodeError>> + use<'a> {
+        stream::unfold((self, 0, 0), |(region, mut x_offset, mut z_offset)| async move {
+            loop {
+                if z_offset >= 32 { return None }
+                let old_offsets = [x_offset, z_offset];
+                x_offset += 1;
+                if x_offset >= 32 {
+                    z_offset += 1;
+                    x_offset = 0;
+                }
+                match region.chunk_column_relative(old_offsets).await {
+                    Ok(Some(col)) => return Some((Ok(col), (region, x_offset, z_offset))),
+                    Ok(None) => {}
+                    Err(e) => return Some((Err(e), (region, x_offset, z_offset))),
+                }
+            }
+        })
     }
 }
 
@@ -162,52 +209,7 @@ impl fmt::Debug for Region {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Region")
             .field("coords", &self.coords)
-            .finish() //TODO (https://github.com/rust-lang/rust/issues/67364) replace with .finish_non_exhaustive()
-    }
-}
-
-impl<'a> IntoIterator for &'a Region {
-    type IntoIter = RegionIter<'a>;
-    type Item = Result<ChunkColumn, ChunkColumnDecodeError>;
-
-    fn into_iter(self) -> RegionIter<'a> {
-        RegionIter {
-            region: self,
-            x_offset: 0,
-            z_offset: 0,
-        }
-    }
-}
-
-/// An iterator over the chunk columns in a region, obtained using `&Region`'s implementation of the `IntoIterator` trait.
-pub struct RegionIter<'a> {
-    region: &'a Region,
-    x_offset: u8,
-    z_offset: u8,
-}
-
-impl<'a> Iterator for RegionIter<'a> {
-    type Item = Result<ChunkColumn, ChunkColumnDecodeError>;
-
-    fn next(&mut self) -> Option<Result<ChunkColumn, ChunkColumnDecodeError>> {
-        loop {
-            if self.z_offset >= 32 { return None }
-            let old_offsets = [self.x_offset, self.z_offset];
-            self.x_offset += 1;
-            if self.x_offset >= 32 {
-                self.z_offset += 1;
-                self.x_offset = 0;
-            }
-            match self.region.chunk_column_relative(old_offsets) {
-                Ok(Some(col)) => return Some(Ok(col)),
-                Ok(None) => {}
-                Err(e) => return Some(Err(e)),
-            }
-        }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (0, Some(32 * 32))
+            .finish_non_exhaustive()
     }
 }
 
@@ -226,7 +228,7 @@ pub struct ChunkColumnDecodeError {
 pub enum ChunkColumnDecodeErrorKind {
     #[allow(missing_docs)]
     #[error("{1}")]
-    Io(&'static str, #[source] io::Error),
+    Io(&'static str, #[source] tokio::io::Error),
     #[allow(missing_docs)]
     #[error(transparent)] Nbt(nbt::Error),
     /// Chunk columns are stored using different types of compression inside `.mca` files. The following compression types are currently implemented:
@@ -333,13 +335,13 @@ impl ChunkColumn {
         // https://minecraft.wiki/w/Region_file_format#Payload
         let mut data_cursor = &*data;
         let mut len = [0; 4];
-        data_cursor.read_exact(&mut len).map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Io("read compressed length", e) })?;
+        std::io::Read::read_exact(&mut data_cursor, &mut len).map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Io("read compressed length", e) })?;
         let len = u32::from_be_bytes(len) - 1;
         let mut compression = [0; 1];
-        data_cursor.read_exact(&mut compression).map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Io("read compression type", e) })?;
+        std::io::Read::read_exact(&mut data_cursor, &mut compression).map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Io("read compression type", e) })?;
         Ok(match compression {
-            [1] => nbt::from_gzip_reader(data_cursor.take(len as u64)).map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Nbt(e) })?,
-            [2] => nbt::from_zlib_reader(data_cursor.take(len as u64)).map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Nbt(e) })?,
+            [1] => nbt::from_gzip_reader(std::io::Read::take(data_cursor, len as u64)).map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Nbt(e) })?,
+            [2] => nbt::from_zlib_reader(std::io::Read::take(data_cursor, len as u64)).map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Nbt(e) })?,
             [compression] => return Err(ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::UnknownCompressionType(compression) }),
         })
     }
@@ -550,7 +552,7 @@ pub struct BlockEntity {
     pub rest: nbt::Map<String, nbt::Value>,
 }
 
-#[test]
-fn test_weird_region() {
-    Region::open("assets\\r.11.-5.mca").unwrap().chunk_column([372, -132]).unwrap();
+#[tokio::test]
+async fn test_weird_region() {
+    Region::open("assets\\r.11.-5.mca").await.unwrap().chunk_column([372, -132]).await.unwrap();
 }
