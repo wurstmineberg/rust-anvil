@@ -1,6 +1,6 @@
 [package]
 name = "mcanvil"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["Fenhl <fenhl@fenhl.net>"]
 description = "A parser for Minecraft's Anvil world format."
 readme = "README.md"
@@ -23,7 +23,7 @@ warnings = "deny"
 async-proto = { version = "0.25.1", optional = true }
 chrono = { version = "0.4.41", default-features = false }
 futures = "0.3.31"
-hematite-nbt = "0.5"
+hematite-nbt = "0.5" #TODO switch to simdnbt for performance improvements once it supports stable Rust (https://github.com/azalea-rs/simdnbt/issues/16)
 itertools = "0.14.0"
 lazy-regex = "3"
 serde = { version = "1", features = ["derive"] }

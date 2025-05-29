@@ -8,7 +8,7 @@ use {
         borrow::Cow,
         collections::HashMap,
         fmt,
-        io::SeekFrom,
+        mem,
         num::ParseIntError,
         path::{
             Path,
@@ -37,10 +37,7 @@ use {
             self,
             File,
         },
-        io::{
-            AsyncReadExt as _,
-            AsyncSeekExt as _,
-        },
+        io::AsyncReadExt as _,
     },
 };
 #[cfg(feature = "async-proto")] use async_proto::Protocol;
@@ -84,8 +81,8 @@ pub struct Region {
     locations: [(u32, u8); 1024],
     /// The last modification times of the chunks, listed north-to-south in west-to-east rows of chunks.
     pub timestamps: [DateTime<Utc>; 1024],
-    /// The underlying file.
-    pub file: File,
+    /// The underlying buffer.
+    pub buf: Vec<u8>,
 }
 
 impl Region {
@@ -95,9 +92,22 @@ impl Region {
     ///
     /// See the `RegionDecodeError` docs.
     pub async fn open(path: impl AsRef<Path>) -> Result<Region, RegionDecodeError> {
-        let (_, rx, rz) = regex_captures!("^r\\.(-?[0-9]+)\\.(-?[0-9]+)\\.mca$", path.as_ref().file_name().ok_or(RegionDecodeError::InvalidFileName)?.to_str().ok_or(RegionDecodeError::InvalidFileName)?).ok_or(RegionDecodeError::InvalidFileName)?;
+        let path = path.as_ref();
+        let (_, rx, rz) = regex_captures!("^r\\.(-?[0-9]+)\\.(-?[0-9]+)\\.mca$", path.file_name().ok_or(RegionDecodeError::InvalidFileName)?.to_str().ok_or(RegionDecodeError::InvalidFileName)?).ok_or(RegionDecodeError::InvalidFileName)?;
         let coords = [rx.parse()?, rz.parse()?];
         let mut file = File::open(path).await?;
+        // make sure we didn't read the region in the middle of Minecraft saving it, which can result in garbage data
+        let mut buf1 = Vec::default();
+        let mut buf2 = Vec::default();
+        file.read_to_end(&mut buf1).await?;
+        file = File::open(path).await?;
+        file.read_to_end(&mut buf2).await?;
+        while buf1 != buf2 {
+            mem::swap(&mut buf1, &mut buf2);
+            buf2.clear();
+            file = File::open(path).await?;
+            file.read_to_end(&mut buf2).await?;
+        }
         // https://minecraft.wiki/w/Region_file_format#Header
         let mut locations = [(0, 0); 1024];
         for i in 0..1024 {
@@ -116,7 +126,7 @@ impl Region {
             file.read_exact(&mut timestamp).await?;
             timestamps[i] = DateTime::from_timestamp(u32::from_be_bytes(timestamp).into(), 0).expect("32-bit Unix timestamp should be in range of chrono DateTime");
         }
-        Ok(Region { coords, locations, timestamps, file })
+        Ok(Region { coords, locations, timestamps, buf: buf1 })
     }
 
     /// Finds the region with the given dimension and region coordinates (i.e. the block coordinates of its northwesternmost block divided by 512) in the given world folder.
@@ -177,12 +187,10 @@ impl Region {
         let coords = [self.coords[0] * 32 + x_offset as i32, self.coords[1] * 32 + z_offset as i32];
         let (offset, sector_count) = self.locations[x_offset as usize + z_offset as usize * 32];
         if offset == 0 { return Ok(None) }
-        self.file.seek(SeekFrom::Start(4096 * u64::from(offset))).await.map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Io("seek", e) })?;
         // The Minecraft wiki says:
         // > Minecraft always pads the last chunk's data to be a multiple-of-4096B in length
         // But this seems to no longer be the case in Minecraft 1.16.1, so this implementation simply reads until EOF if the remaining file is shorter than indicated by sector_count.
-        let mut data = Vec::default();
-        (&mut self.file).take(4096 * sector_count as u64).read_to_end(&mut data).await.map_err(|e| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Io("read chunk column", e) })?;
+        let data = self.buf.get(4096 * usize::try_from(offset).expect("offset too big for 16-bit usize")..4096 * (usize::try_from(offset).expect("offset too big for 16-bit usize") + usize::from(sector_count))).ok_or_else(|| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Range })?.to_owned();
         Ok(Some(ChunkColumn::new(coords, data)?))
     }
 
@@ -234,6 +242,9 @@ pub enum ChunkColumnDecodeErrorKind {
     Io(&'static str, #[source] tokio::io::Error),
     #[allow(missing_docs)]
     #[error(transparent)] Nbt(nbt::Error),
+    #[allow(missing_docs)]
+    #[error("attempted to read past end of region file")]
+    Range,
     /// Chunk columns are stored using different types of compression inside `.mca` files. The following compression types are currently implemented:
     ///
     /// 1. gzip
