@@ -14,6 +14,7 @@ use {
             Path,
             PathBuf,
         },
+        time::Duration,
     },
     chrono::prelude::*,
     futures::{
@@ -38,6 +39,7 @@ use {
             File,
         },
         io::AsyncReadExt as _,
+        time::sleep,
     },
 };
 #[cfg(feature = "async-proto")] use async_proto::Protocol;
@@ -100,11 +102,13 @@ impl Region {
         let mut buf1 = Vec::default();
         let mut buf2 = Vec::default();
         file.read_to_end(&mut buf1).await?;
+        sleep(Duration::from_secs(1)).await;
         file = File::open(path).await?;
         file.read_to_end(&mut buf2).await?;
         while buf1 != buf2 {
             mem::swap(&mut buf1, &mut buf2);
             buf2.clear();
+            sleep(Duration::from_secs(1)).await;
             file = File::open(path).await?;
             file.read_to_end(&mut buf2).await?;
         }
