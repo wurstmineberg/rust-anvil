@@ -16,6 +16,7 @@ use {
         },
         time::Duration,
     },
+    arrayref::array_ref,
     chrono::prelude::*,
     futures::{
         future,
@@ -97,37 +98,54 @@ impl Region {
         let path = path.as_ref();
         let (_, rx, rz) = regex_captures!("^r\\.(-?[0-9]+)\\.(-?[0-9]+)\\.mca$", path.file_name().ok_or(RegionDecodeError::InvalidFileName)?.to_str().ok_or(RegionDecodeError::InvalidFileName)?).ok_or(RegionDecodeError::InvalidFileName)?;
         let coords = [rx.parse()?, rz.parse()?];
-        let mut file = File::open(path).await?;
         // make sure we didn't read the region in the middle of Minecraft saving it, which can result in garbage data
         let mut buf1 = Vec::default();
-        let mut buf2 = Vec::default();
-        file.read_to_end(&mut buf1).await?;
+        let mut err1 = match File::open(path).await {
+            Ok(mut file) => match file.read_to_end(&mut buf1).await {
+                Ok(_) => None,
+                Err(e) => Some(e),
+            },
+            Err(e) => Some(e),
+        };
         sleep(Duration::from_secs(1)).await;
-        file = File::open(path).await?;
-        file.read_to_end(&mut buf2).await?;
-        while buf1 != buf2 {
+        let mut buf2 = Vec::default();
+        let mut err2 = match File::open(path).await {
+            Ok(mut file) => match file.read_to_end(&mut buf2).await {
+                Ok(_) => None,
+                Err(e) => Some(e),
+            },
+            Err(e) => Some(e),
+        };
+        if err1.is_some() && err2.is_some() {
+            return Err(err2.unwrap().into())
+        }
+        while err1.is_some() || err2.is_some() || buf1 != buf2 {
             mem::swap(&mut buf1, &mut buf2);
+            mem::swap(&mut err1, &mut err2);
             buf2.clear();
             sleep(Duration::from_secs(1)).await;
-            file = File::open(path).await?;
-            file.read_to_end(&mut buf2).await?;
+            err2 = match File::open(path).await {
+                Ok(mut file) => match file.read_to_end(&mut buf2).await {
+                    Ok(_) => None,
+                    Err(e) => Some(e),
+                },
+                Err(e) => Some(e),
+            };
+            if err1.is_some() && err2.is_some() {
+                return Err(err2.unwrap().into())
+            }
         }
         // https://minecraft.wiki/w/Region_file_format#Header
         let mut locations = [(0, 0); 1024];
         for i in 0..1024 {
-            let mut offset = [0; 3];
-            file.read_exact(&mut offset).await?;
-            let [o0, o1, o2] = offset;
+            let [o0, o1, o2] = *array_ref![buf1, 4 * i, 3];
             let offset = u32::from_be_bytes([0, o0, o1, o2]);
-            let mut sector_count = [0; 1];
-            file.read_exact(&mut sector_count).await?;
-            let [sector_count] = sector_count;
+            let sector_count = buf1[4 * i + 3];
             locations[i] = (offset, sector_count);
         }
         let mut timestamps = [DateTime::UNIX_EPOCH; 1024];
         for i in 0..1024 {
-            let mut timestamp = [0; 4];
-            file.read_exact(&mut timestamp).await?;
+            let timestamp = *array_ref![buf1, 4096 + 4 * i, 4];
             timestamps[i] = DateTime::from_timestamp(u32::from_be_bytes(timestamp).into(), 0).expect("32-bit Unix timestamp should be in range of chrono DateTime");
         }
         Ok(Region { coords, locations, timestamps, buf: buf1 })
