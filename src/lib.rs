@@ -152,18 +152,24 @@ impl Region {
     }
 
     /// Finds the region with the given dimension and region coordinates (i.e. the block coordinates of its northwesternmost block divided by 512) in the given world folder.
-    pub async fn find(world_dir: impl AsRef<Path>, dimension: Dimension, [x, z]: [i32; 2]) -> Result<Option<Region>, RegionDecodeError> {
-        let dim_dir = match dimension {
-            Dimension::Overworld => world_dir.as_ref().join("region"),
-            Dimension::Nether => world_dir.as_ref().join("DIM-1").join("region"),
-            Dimension::End => world_dir.as_ref().join("DIM1").join("region"),
-        };
-        let region_path = dim_dir.join(format!("r.{x}.{z}.mca"));
+    pub async fn find(world_dir: impl AsRef<Path>, dimension: Dimension, coords: [i32; 2]) -> Result<Option<Region>, RegionDecodeError> {
+        let region_path = Self::path(world_dir, dimension, coords);
         Ok(if region_path.try_exists()? {
             Some(Self::open(region_path).await?)
         } else {
             None
         })
+    }
+
+    /// Returns the path where the region with the given dimension and region coordinates (i.e. the block coordinates of its northwesternmost block divided by 512) would be stored,
+    /// regardless of whether that region file actually exists.
+    pub fn path(world_dir: impl AsRef<Path>, dimension: Dimension, [x, z]: [i32; 2]) -> PathBuf {
+        let dim_dir = match dimension {
+            Dimension::Overworld => world_dir.as_ref().join("region"),
+            Dimension::Nether => world_dir.as_ref().join("DIM-1").join("region"),
+            Dimension::End => world_dir.as_ref().join("DIM1").join("region"),
+        };
+        dim_dir.join(format!("r.{x}.{z}.mca"))
     }
 
     /// Iterates over all regions in the given dimension of the given world folder.
