@@ -1,6 +1,6 @@
 [package]
 name = "mcanvil"
-version = "0.3.2"
+version = "0.3.3"
 authors = ["Fenhl <fenhl@fenhl.net>"]
 description = "A parser for Minecraft's Anvil world format."
 readme = "README.md"

@@ -79,6 +79,8 @@ pub enum RegionDecodeError {
 
 /// A region is a section of a world that's stored as a single `.mca` file, consisting of 32×32 chunk columns.
 pub struct Region {
+    /// The dimension containing this region.
+    pub dimension: Dimension,
     /// The region coordinates of this region, i.e. the block coordinates of its northwesternmost block column divided by 512.
     pub coords: [i32; 2],
     locations: [(u32, u8); 1024],
@@ -148,7 +150,15 @@ impl Region {
             let timestamp = *array_ref![buf1, 4096 + 4 * i, 4];
             timestamps[i] = DateTime::from_timestamp(u32::from_be_bytes(timestamp).into(), 0).expect("32-bit Unix timestamp should be in range of chrono DateTime");
         }
-        Ok(Region { coords, locations, timestamps, buf: buf1 })
+        Ok(Region {
+            dimension: match path.parent().and_then(|parent| parent.file_name()) {
+                Some(parent) if parent == "DIM-1" => Dimension::Nether,
+                Some(parent) if parent == "DIM1" => Dimension::End,
+                _ => Dimension::Overworld,
+            },
+            buf: buf1,
+            coords, locations, timestamps,
+        })
     }
 
     /// Finds the region with the given dimension and region coordinates (i.e. the block coordinates of its northwesternmost block divided by 512) in the given world folder.
