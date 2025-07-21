@@ -182,11 +182,11 @@ impl Region {
         dim_dir.join(format!("r.{x}.{z}.mca"))
     }
 
-    /// Iterates over all regions in the given dimension of the given world folder.
-    pub fn all(world_dir: impl AsRef<Path>, dimension: Dimension) -> impl Stream<Item = Result<Region, RegionDecodeError>> {
+    /// Iterates over the coordinates of all regions in the given dimension of the given world folder.
+    pub fn all_coords(world_dir: impl AsRef<Path>, dimension: Dimension) -> impl Stream<Item = Result<[i32; 2], RegionDecodeError>> {
         enum State {
             Init(PathBuf),
-            Continued(PathBuf, fs::ReadDir),
+            Continued(fs::ReadDir),
         }
 
         let dim_dir = match dimension {
@@ -197,10 +197,40 @@ impl Region {
         let read_dir = stream::try_unfold(State::Init(dim_dir), |state| async move {
             Ok(match state {
                 State::Init(dim_dir) => {
-                    let mut read_dir = fs::read_dir(&dim_dir).await?;
-                    read_dir.next_entry().await?.map(|entry| (entry, State::Continued(dim_dir, read_dir)))
+                    let mut read_dir = fs::read_dir(dim_dir).await?;
+                    read_dir.next_entry().await?.map(|entry| (entry, State::Continued(read_dir)))
                 }
-                State::Continued(path, mut read_dir) => read_dir.next_entry().await?.map(|entry| (entry, State::Continued(path, read_dir))),
+                State::Continued(mut read_dir) => read_dir.next_entry().await?.map(|entry| (entry, State::Continued(read_dir))),
+            })
+        });
+        read_dir.try_filter_map(|entry| async move {
+            Ok(if let Some((_, rx, rz)) = regex_captures!("^r\\.(-?[0-9]+)\\.(-?[0-9]+)\\.mca$", entry.file_name().to_str().ok_or(RegionDecodeError::InvalidFileName)?) {
+                Some([rx.parse()?, rz.parse()?])
+            } else {
+                None
+            })
+        })
+    }
+
+    /// Iterates over all regions in the given dimension of the given world folder.
+    pub fn all(world_dir: impl AsRef<Path>, dimension: Dimension) -> impl Stream<Item = Result<Region, RegionDecodeError>> {
+        enum State {
+            Init(PathBuf),
+            Continued(fs::ReadDir),
+        }
+
+        let dim_dir = match dimension {
+            Dimension::Overworld => world_dir.as_ref().join("region"),
+            Dimension::Nether => world_dir.as_ref().join("DIM-1").join("region"),
+            Dimension::End => world_dir.as_ref().join("DIM1").join("region"),
+        };
+        let read_dir = stream::try_unfold(State::Init(dim_dir), |state| async move {
+            Ok(match state {
+                State::Init(dim_dir) => {
+                    let mut read_dir = fs::read_dir(dim_dir).await?;
+                    read_dir.next_entry().await?.map(|entry| (entry, State::Continued(read_dir)))
+                }
+                State::Continued(mut read_dir) => read_dir.next_entry().await?.map(|entry| (entry, State::Continued(read_dir))),
             })
         });
         read_dir
