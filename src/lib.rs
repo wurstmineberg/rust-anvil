@@ -239,10 +239,10 @@ impl Region {
     }
 
     /// Returns a `ChunkColumn` in this region given its **absolute** chunk coordinates (i.e. the block coordinates of its northwesternmost block divided by 16).
-    pub async fn chunk_column(&mut self, [x, z]: [i32; 2]) -> Result<Option<ChunkColumn>, ChunkColumnDecodeError> {
+    pub fn chunk_column(&self, [x, z]: [i32; 2]) -> Result<Option<ChunkColumn>, ChunkColumnDecodeError> {
         let x_offset = x.rem_euclid(32); //TODO make sure coords are in this region
         let z_offset = z.rem_euclid(32); //TODO make sure coords are in this region
-        self.chunk_column_relative([x_offset as u8, z_offset as u8]).await
+        self.chunk_column_relative([x_offset as u8, z_offset as u8])
     }
 
     /// Returns a `ChunkColumn` in this region given its chunk coordinates (i.e. the block coordinates of its northwesternmost block divided by 16) **relative** to the northwest corner of this region.
@@ -250,7 +250,7 @@ impl Region {
     /// # Panics
     ///
     /// Panics if either of the given coordinates is not less than 32.
-    pub async fn chunk_column_relative(&mut self, [x_offset, z_offset]: [u8; 2]) -> Result<Option<ChunkColumn>, ChunkColumnDecodeError> {
+    pub fn chunk_column_relative(&self, [x_offset, z_offset]: [u8; 2]) -> Result<Option<ChunkColumn>, ChunkColumnDecodeError> {
         assert!(x_offset < 32 && z_offset < 32);
         let coords = [self.coords[0] * 32 + x_offset as i32, self.coords[1] * 32 + z_offset as i32];
         let (offset, sector_count) = self.locations[x_offset as usize + z_offset as usize * 32];
@@ -261,26 +261,6 @@ impl Region {
         let data = self.buf.get(4096 * usize::try_from(offset).expect("offset too big for 16-bit usize")..4096 * (usize::try_from(offset).expect("offset too big for 16-bit usize") + usize::from(sector_count))).ok_or_else(|| ChunkColumnDecodeError { coords, kind: ChunkColumnDecodeErrorKind::Range })?.to_owned();
         Ok(Some(ChunkColumn::new(coords, data)?))
     }
-
-    /// Returns a stream over the chunk columns in this region.
-    pub fn chunk_columns<'a>(&'a mut self) -> impl Stream<Item = Result<ChunkColumn, ChunkColumnDecodeError>> + use<'a> {
-        stream::unfold((self, 0, 0), |(region, mut x_offset, mut z_offset)| async move {
-            loop {
-                if z_offset >= 32 { return None }
-                let old_offsets = [x_offset, z_offset];
-                x_offset += 1;
-                if x_offset >= 32 {
-                    z_offset += 1;
-                    x_offset = 0;
-                }
-                match region.chunk_column_relative(old_offsets).await {
-                    Ok(Some(col)) => return Some((Ok(col), (region, x_offset, z_offset))),
-                    Ok(None) => {}
-                    Err(e) => return Some((Err(e), (region, x_offset, z_offset))),
-                }
-            }
-        })
-    }
 }
 
 impl fmt::Debug for Region {
@@ -289,6 +269,51 @@ impl fmt::Debug for Region {
         f.debug_struct("Region")
             .field("coords", &self.coords)
             .finish_non_exhaustive()
+    }
+}
+
+impl<'a> IntoIterator for &'a Region {
+    type IntoIter = RegionIter<'a>;
+    type Item = Result<ChunkColumn, ChunkColumnDecodeError>;
+
+    fn into_iter(self) -> RegionIter<'a> {
+        RegionIter {
+            region: self,
+            x_offset: 0,
+            z_offset: 0,
+        }
+    }
+}
+
+/// An iterator over the chunk columns in a region, obtained using `&Region`'s implementation of the `IntoIterator` trait.
+pub struct RegionIter<'a> {
+    region: &'a Region,
+    x_offset: u8,
+    z_offset: u8,
+}
+
+impl<'a> Iterator for RegionIter<'a> {
+    type Item = Result<ChunkColumn, ChunkColumnDecodeError>;
+
+    fn next(&mut self) -> Option<Result<ChunkColumn, ChunkColumnDecodeError>> {
+        loop {
+            if self.z_offset >= 32 { return None }
+            let old_offsets = [self.x_offset, self.z_offset];
+            self.x_offset += 1;
+            if self.x_offset >= 32 {
+                self.z_offset += 1;
+                self.x_offset = 0;
+            }
+            match self.region.chunk_column_relative(old_offsets) {
+                Ok(Some(col)) => return Some(Ok(col)),
+                Ok(None) => {}
+                Err(e) => return Some(Err(e)),
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, Some(32 * 32))
     }
 }
 
