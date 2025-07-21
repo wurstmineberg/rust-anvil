@@ -164,7 +164,7 @@ impl Region {
     /// Finds the region with the given dimension and region coordinates (i.e. the block coordinates of its northwesternmost block divided by 512) in the given world folder.
     pub async fn find(world_dir: impl AsRef<Path>, dimension: Dimension, coords: [i32; 2]) -> Result<Option<Region>, RegionDecodeError> {
         let region_path = Self::path(world_dir, dimension, coords);
-        Ok(if region_path.try_exists()? {
+        Ok(if fs::try_exists(&region_path).await? {
             Some(Self::open(region_path).await?)
         } else {
             None
