@@ -644,7 +644,7 @@ pub struct BlockState {
 }
 
 /// A [block entity](https://minecraft.wiki/w/Block_entity).
-#[derive(Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct BlockEntity {
     /// The [resource location](https://minecraft.wiki/w/Resource_location) of the block entity.
     pub id: String,
