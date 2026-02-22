@@ -7,6 +7,7 @@ readme = "README.md"
 keywords = ["anvil", "minecraft", "region"]
 license = "MIT"
 edition = "2024"
+rust-version = "1.91" # nixpkgs stable
 
 [lints.rust]
 missing_docs = "deny"
@@ -20,14 +21,14 @@ unused_qualifications = "deny"
 warnings = "deny"
 
 [dependencies]
-arrayref = "0.3.9"
+arrayref = "0.3"
 async-proto = { version = "0.26", optional = true }
-chrono = { version = "0.4.41", default-features = false }
-futures = "0.3.31"
+chrono = { version = "0.4", default-features = false }
+futures = "0.3"
 hematite-nbt = "0.5" #TODO switch to simdnbt for performance improvements once it supports stable Rust (https://github.com/azalea-rs/simdnbt/issues/16)
-itertools = "0.14.0"
+itertools = "0.14"
 lazy-regex = "3"
 serde = { version = "1", features = ["derive"] }
-serde_with = "3.12.0"
+serde_with = "3"
 thiserror = "2"
-tokio = { version = "1.45.0", features = ["fs", "io-util", "macros", "rt", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "rt", "time"] }
