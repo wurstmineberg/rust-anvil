@@ -22,7 +22,7 @@ warnings = "deny"
 
 [dependencies]
 arrayref = "0.3"
-async-proto = { version = "0.26", optional = true }
+async-proto = { version = "0.26", features = ["hematite-nbt"], optional = true }
 chrono = { version = "0.4", default-features = false }
 futures = "0.3"
 hematite-nbt = "0.5" #TODO switch to simdnbt for performance improvements once it supports stable Rust (https://github.com/azalea-rs/simdnbt/issues/16)

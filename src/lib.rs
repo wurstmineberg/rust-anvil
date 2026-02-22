@@ -537,12 +537,13 @@ impl ChunkColumn {
 }
 
 /// A 16x16x16 chunk.
+#[derive(Clone)]
 pub struct ChunkSection {
     data_version: i32,
     data: ChunkSectionData,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct ChunkSectionData {
     #[serde(rename = "Y")]
     y: i8,
@@ -550,7 +551,7 @@ struct ChunkSectionData {
     block_states: BlockStates,
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Default, Clone, Deserialize)]
 struct BlockStates {
     palette: Vec<BlockState>,
     data: Option<Vec<i64>>,
@@ -645,6 +646,7 @@ pub struct BlockState {
 
 /// A [block entity](https://minecraft.wiki/w/Block_entity).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+#[cfg_attr(feature = "async-proto", derive(Protocol))]
 pub struct BlockEntity {
     /// The [resource location](https://minecraft.wiki/w/Resource_location) of the block entity.
     pub id: String,
