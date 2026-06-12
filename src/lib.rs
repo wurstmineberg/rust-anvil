@@ -152,8 +152,8 @@ impl Region {
         }
         Ok(Region {
             dimension: match path.parent().and_then(|parent| parent.file_name()) {
-                Some(parent) if parent == "DIM-1" => Dimension::Nether,
-                Some(parent) if parent == "DIM1" => Dimension::End,
+                Some(parent) if parent == "DIM-1" || parent == "the_nether" => Dimension::Nether,
+                Some(parent) if parent == "DIM1" || parent == "the_end" => Dimension::End,
                 _ => Dimension::Overworld,
             },
             buf: buf1,
@@ -175,9 +175,9 @@ impl Region {
     /// regardless of whether that region file actually exists.
     pub fn path(world_dir: impl AsRef<Path>, dimension: Dimension, [x, z]: [i32; 2]) -> PathBuf {
         let dim_dir = match dimension {
-            Dimension::Overworld => world_dir.as_ref().join("region"),
-            Dimension::Nether => world_dir.as_ref().join("DIM-1").join("region"),
-            Dimension::End => world_dir.as_ref().join("DIM1").join("region"),
+            Dimension::Overworld => world_dir.as_ref().join("dimensions").join("minecraft").join("overworld").join("region"),
+            Dimension::Nether => world_dir.as_ref().join("dimensions").join("minecraft").join("the_nether").join("region"),
+            Dimension::End => world_dir.as_ref().join("dimensions").join("minecraft").join("the_end").join("region"),
         };
         dim_dir.join(format!("r.{x}.{z}.mca"))
     }
@@ -190,9 +190,9 @@ impl Region {
         }
 
         let dim_dir = match dimension {
-            Dimension::Overworld => world_dir.as_ref().join("region"),
-            Dimension::Nether => world_dir.as_ref().join("DIM-1").join("region"),
-            Dimension::End => world_dir.as_ref().join("DIM1").join("region"),
+            Dimension::Overworld => world_dir.as_ref().join("dimensions").join("minecraft").join("overworld").join("region"),
+            Dimension::Nether => world_dir.as_ref().join("dimensions").join("minecraft").join("the_nether").join("region"),
+            Dimension::End => world_dir.as_ref().join("dimensions").join("minecraft").join("the_end").join("region"),
         };
         let read_dir = stream::try_unfold(State::Init(dim_dir), |state| async move {
             Ok(match state {
@@ -220,9 +220,9 @@ impl Region {
         }
 
         let dim_dir = match dimension {
-            Dimension::Overworld => world_dir.as_ref().join("region"),
-            Dimension::Nether => world_dir.as_ref().join("DIM-1").join("region"),
-            Dimension::End => world_dir.as_ref().join("DIM1").join("region"),
+            Dimension::Overworld => world_dir.as_ref().join("dimensions").join("minecraft").join("overworld").join("region"),
+            Dimension::Nether => world_dir.as_ref().join("dimensions").join("minecraft").join("the_nether").join("region"),
+            Dimension::End => world_dir.as_ref().join("dimensions").join("minecraft").join("the_end").join("region"),
         };
         let read_dir = stream::try_unfold(State::Init(dim_dir), |state| async move {
             Ok(match state {
