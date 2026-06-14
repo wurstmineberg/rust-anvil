@@ -69,12 +69,18 @@ pub enum Dimension {
 /// An error returned by `Region::open`.
 #[derive(Debug, thiserror::Error)]
 pub enum RegionDecodeError {
-    /// The given filename did not match the region coordinates format, `r.<x>.<z>.mca`.
-    #[error("the given filename did not match the region coordinates format, `r.<x>.<z>.mca`")]
-    InvalidFileName,
     #[allow(missing_docs)] #[error(transparent)] Io(#[from] tokio::io::Error),
     /// The x or z coordinate did not fit into an `i32`.
     #[error(transparent)] ParseInt(#[from] ParseIntError),
+    /// The given filename did not match the region coordinates format, `r.<x>.<z>.mca`.
+    #[error("the given filename did not match the region coordinates format, `r.<x>.<z>.mca`")]
+    InvalidFileName,
+    /// The region file's header is less than 8192 bytes long.
+    #[error("the region file's header is less than 8192 bytes long")]
+    HeaderTruncated {
+        /// The actual length of the region file's header.
+        len: usize,
+    },
 }
 
 /// A region is a section of a world that's stored as a single `.mca` file, consisting of 32×32 chunk columns.
@@ -139,6 +145,7 @@ impl Region {
         }
         // https://minecraft.wiki/w/Region_file_format#Header
         let mut locations = [(0, 0); 1024];
+        if buf1.len() < 8192 { return Err(RegionDecodeError::HeaderTruncated { len: buf1.len() }) }
         for i in 0..1024 {
             let [o0, o1, o2] = *array_ref![buf1, 4 * i, 3];
             let offset = u32::from_be_bytes([0, o0, o1, o2]);
