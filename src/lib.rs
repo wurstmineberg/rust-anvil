@@ -102,7 +102,7 @@ impl Region {
     /// # Errors
     ///
     /// See the `RegionDecodeError` docs.
-    pub async fn open(path: impl AsRef<Path>) -> Result<Region, RegionDecodeError> {
+    pub async fn open(path: impl AsRef<Path>) -> Result<Self, RegionDecodeError> {
         Self::open_with_bufs(path, Vec::default(), &mut Vec::default()).await
     }
 
@@ -111,7 +111,7 @@ impl Region {
     /// # Errors
     ///
     /// See the `RegionDecodeError` docs.
-    pub async fn open_with_bufs(path: impl AsRef<Path>, mut buf1: Vec<u8>, buf2: &mut Vec<u8>) -> Result<Region, RegionDecodeError> {
+    pub async fn open_with_bufs(path: impl AsRef<Path>, mut buf1: Vec<u8>, buf2: &mut Vec<u8>) -> Result<Self, RegionDecodeError> {
         let path = path.as_ref();
         let (_, rx, rz) = regex_captures!("^r\\.(-?[0-9]+)\\.(-?[0-9]+)\\.mca$", path.file_name().ok_or(RegionDecodeError::InvalidFileName)?.to_str().ok_or(RegionDecodeError::InvalidFileName)?).ok_or(RegionDecodeError::InvalidFileName)?;
         let coords = [rx.parse()?, rz.parse()?];
@@ -152,41 +152,72 @@ impl Region {
                 return Err(err2.unwrap().into())
             }
         }
+        Self::decode(path, coords, buf1)
+    }
+
+    /// Opens the given `.mca` file and parses it as a `Region`, skipping the mitigation for reading a file while Minecraft is saving it.
+    ///
+    /// Should not be used on a live Minecraft server's world directory. The given `Vec` is used as a buffer to store the file contents, which may be used to reduce memory allocations when opening multiple regions.
+    ///
+    /// # Errors
+    ///
+    /// See the `RegionDecodeError` docs.
+    pub async fn open_no_diff(path: impl AsRef<Path>, mut buf: Vec<u8>) -> Result<Self, RegionDecodeError> {
+        let path = path.as_ref();
+        let (_, rx, rz) = regex_captures!("^r\\.(-?[0-9]+)\\.(-?[0-9]+)\\.mca$", path.file_name().ok_or(RegionDecodeError::InvalidFileName)?.to_str().ok_or(RegionDecodeError::InvalidFileName)?).ok_or(RegionDecodeError::InvalidFileName)?;
+        let coords = [rx.parse()?, rz.parse()?];
+        buf.clear();
+        File::open(path).await?.read_to_end(&mut buf).await?;
+        Self::decode(path, coords, buf)
+    }
+
+    fn decode(path: &Path, coords: [i32; 2], buf: Vec<u8>) -> Result<Self, RegionDecodeError> {
         // https://minecraft.wiki/w/Region_file_format#Header
         let mut locations = [(0, 0); 1024];
-        if buf1.len() < 8192 { return Err(RegionDecodeError::HeaderTruncated { len: buf1.len() }) }
+        if buf.len() < 8192 { return Err(RegionDecodeError::HeaderTruncated { len: buf.len() }) }
         for i in 0..1024 {
-            let [o0, o1, o2] = *array_ref![buf1, 4 * i, 3];
+            let [o0, o1, o2] = *array_ref![buf, 4 * i, 3];
             let offset = u32::from_be_bytes([0, o0, o1, o2]);
-            let sector_count = buf1[4 * i + 3];
+            let sector_count = buf[4 * i + 3];
             locations[i] = (offset, sector_count);
         }
         let mut timestamps = [DateTime::UNIX_EPOCH; 1024];
         for i in 0..1024 {
-            let timestamp = *array_ref![buf1, 4096 + 4 * i, 4];
+            let timestamp = *array_ref![buf, 4096 + 4 * i, 4];
             timestamps[i] = DateTime::from_timestamp(u32::from_be_bytes(timestamp).into(), 0).expect("32-bit Unix timestamp should be in range of chrono DateTime");
         }
-        Ok(Region {
+        Ok(Self {
             dimension: match path.parent().and_then(|parent| parent.file_name()) {
                 Some(parent) if parent == "DIM-1" || parent == "the_nether" => Dimension::Nether,
                 Some(parent) if parent == "DIM1" || parent == "the_end" => Dimension::End,
                 _ => Dimension::Overworld,
             },
-            buf: buf1,
-            coords, locations, timestamps,
+            coords, locations, timestamps, buf,
         })
     }
 
     /// Finds the region with the given dimension and region coordinates (i.e. the block coordinates of its northwesternmost block divided by 512) in the given world folder.
-    pub async fn find(world_dir: impl AsRef<Path>, dimension: Dimension, coords: [i32; 2]) -> Result<Option<Region>, RegionDecodeError> {
+    pub async fn find(world_dir: impl AsRef<Path>, dimension: Dimension, coords: [i32; 2]) -> Result<Option<Self>, RegionDecodeError> {
         Self::find_with_bufs(world_dir, dimension, coords, Vec::default(), &mut Vec::default()).await
     }
 
     /// Finds the region with the given dimension and region coordinates (i.e. the block coordinates of its northwesternmost block divided by 512) in the given world folder. The given `Vec`s are used as buffers to store the file contents, which may be used to reduce memory allocations when opening multiple regions.
-    pub async fn find_with_bufs(world_dir: impl AsRef<Path>, dimension: Dimension, coords: [i32; 2], buf1: Vec<u8>, buf2: &mut Vec<u8>) -> Result<Option<Region>, RegionDecodeError> {
+    pub async fn find_with_bufs(world_dir: impl AsRef<Path>, dimension: Dimension, coords: [i32; 2], buf1: Vec<u8>, buf2: &mut Vec<u8>) -> Result<Option<Self>, RegionDecodeError> {
         let region_path = Self::path(world_dir, dimension, coords);
         Ok(if fs::try_exists(&region_path).await? {
             Some(Self::open_with_bufs(region_path, buf1, buf2).await?)
+        } else {
+            None
+        })
+    }
+
+    /// Finds the region with the given dimension and region coordinates (i.e. the block coordinates of its northwesternmost block divided by 512) in the given world folder.
+    ///
+    /// Should not be used on a live Minecraft server's world directory. The given `Vec` is used as a buffer to store the file contents, which may be used to reduce memory allocations when opening multiple regions.
+    pub async fn find_no_diff(world_dir: impl AsRef<Path>, dimension: Dimension, coords: [i32; 2], buf: Vec<u8>) -> Result<Option<Self>, RegionDecodeError> {
+        let region_path = Self::path(world_dir, dimension, coords);
+        Ok(if fs::try_exists(&region_path).await? {
+            Some(Self::open_no_diff(region_path, buf).await?)
         } else {
             None
         })
@@ -234,7 +265,7 @@ impl Region {
     }
 
     /// Iterates over all regions in the given dimension of the given world folder.
-    pub fn all(world_dir: impl AsRef<Path>, dimension: Dimension) -> impl Stream<Item = Result<Region, RegionDecodeError>> {
+    pub fn all(world_dir: impl AsRef<Path>, dimension: Dimension) -> impl Stream<Item = Result<Self, RegionDecodeError>> {
         enum State {
             Init(PathBuf),
             Continued(fs::ReadDir),
@@ -683,6 +714,11 @@ pub struct BlockEntity {
 }
 
 #[tokio::test]
+async fn test_new_region_format() {
+    Region::open("assets/r.8.-9.mca").await.unwrap().chunk_column_relative([14, 31]).unwrap();
+}
+
+#[tokio::test]
 async fn test_weird_region() {
-    Region::open("assets\\r.11.-5.mca").await.unwrap().chunk_column([372, -132]).await.unwrap();
+    Region::open("assets/r.11.-5.mca").await.unwrap().chunk_column([372, -132]).unwrap();
 }
