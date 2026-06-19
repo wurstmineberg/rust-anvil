@@ -179,9 +179,14 @@ impl Region {
 
     /// Finds the region with the given dimension and region coordinates (i.e. the block coordinates of its northwesternmost block divided by 512) in the given world folder.
     pub async fn find(world_dir: impl AsRef<Path>, dimension: Dimension, coords: [i32; 2]) -> Result<Option<Region>, RegionDecodeError> {
+        Self::find_with_bufs(world_dir, dimension, coords, Vec::default(), &mut Vec::default()).await
+    }
+
+    /// Finds the region with the given dimension and region coordinates (i.e. the block coordinates of its northwesternmost block divided by 512) in the given world folder. The given `Vec`s are used as buffers to store the file contents, which may be used to reduce memory allocations when opening multiple regions.
+    pub async fn find_with_bufs(world_dir: impl AsRef<Path>, dimension: Dimension, coords: [i32; 2], buf1: Vec<u8>, buf2: &mut Vec<u8>) -> Result<Option<Region>, RegionDecodeError> {
         let region_path = Self::path(world_dir, dimension, coords);
         Ok(if fs::try_exists(&region_path).await? {
-            Some(Self::open(region_path).await?)
+            Some(Self::open_with_bufs(region_path, buf1, buf2).await?)
         } else {
             None
         })
