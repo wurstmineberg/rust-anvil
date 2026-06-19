@@ -26,7 +26,7 @@ async-proto = { version = "0.26", features = ["hematite-nbt"], optional = true }
 chrono = { version = "0.4", default-features = false }
 futures = "0.3"
 hematite-nbt = "0.5" #TODO switch to simdnbt for performance improvements once it supports stable Rust (https://github.com/azalea-rs/simdnbt/issues/16)
-itertools = "0.14"
+itertools = "0.15"
 lazy-regex = "3"
 serde = { version = "1", features = ["derive"] }
 serde_with = "3"
