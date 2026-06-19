@@ -103,11 +103,20 @@ impl Region {
     ///
     /// See the `RegionDecodeError` docs.
     pub async fn open(path: impl AsRef<Path>) -> Result<Region, RegionDecodeError> {
+        Self::open_with_bufs(path, Vec::default(), &mut Vec::default()).await
+    }
+
+    /// Opens the given `.mca` file and parses it as a `Region`. The given `Vec`s are used as buffers to store the file contents, which may be used to reduce memory allocations when opening multiple regions.
+    ///
+    /// # Errors
+    ///
+    /// See the `RegionDecodeError` docs.
+    pub async fn open_with_bufs(path: impl AsRef<Path>, mut buf1: Vec<u8>, buf2: &mut Vec<u8>) -> Result<Region, RegionDecodeError> {
         let path = path.as_ref();
         let (_, rx, rz) = regex_captures!("^r\\.(-?[0-9]+)\\.(-?[0-9]+)\\.mca$", path.file_name().ok_or(RegionDecodeError::InvalidFileName)?.to_str().ok_or(RegionDecodeError::InvalidFileName)?).ok_or(RegionDecodeError::InvalidFileName)?;
         let coords = [rx.parse()?, rz.parse()?];
         // make sure we didn't read the region in the middle of Minecraft saving it, which can result in garbage data
-        let mut buf1 = Vec::default();
+        buf1.clear();
         let mut err1 = match File::open(path).await {
             Ok(mut file) => match file.read_to_end(&mut buf1).await {
                 Ok(_) => None,
@@ -116,9 +125,9 @@ impl Region {
             Err(e) => Some(e),
         };
         sleep(Duration::from_secs(1)).await;
-        let mut buf2 = Vec::default();
+        buf2.clear();
         let mut err2 = match File::open(path).await {
-            Ok(mut file) => match file.read_to_end(&mut buf2).await {
+            Ok(mut file) => match file.read_to_end(buf2).await {
                 Ok(_) => None,
                 Err(e) => Some(e),
             },
@@ -127,13 +136,13 @@ impl Region {
         if err1.is_some() && err2.is_some() {
             return Err(err2.unwrap().into())
         }
-        while err1.is_some() || err2.is_some() || buf1 != buf2 {
-            mem::swap(&mut buf1, &mut buf2);
+        while err1.is_some() || err2.is_some() || buf1 != *buf2 {
+            mem::swap(&mut buf1, buf2);
             mem::swap(&mut err1, &mut err2);
             buf2.clear();
             sleep(Duration::from_secs(1)).await;
             err2 = match File::open(path).await {
-                Ok(mut file) => match file.read_to_end(&mut buf2).await {
+                Ok(mut file) => match file.read_to_end(buf2).await {
                     Ok(_) => None,
                     Err(e) => Some(e),
                 },
