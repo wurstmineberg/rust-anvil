@@ -1,13 +1,31 @@
 {
   "nodes": {
+    "flake": {
+      "inputs": {
+        "nixpkgs": "nixpkgs"
+      },
+      "locked": {
+        "lastModified": 1790473457,
+        "narHash": "sha256-k6iAhlvAmnSOPlde+g2WpxXG8QZl7iOfacTuCuN+5W4=",
+        "owner": "fenhl",
+        "repo": "flake",
+        "rev": "1ad9cc67fd29b119ac1cdb29d8ab08663b2df146",
+        "type": "github"
+      },
+      "original": {
+        "owner": "fenhl",
+        "repo": "flake",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1780902259,
-        "narHash": "sha256-q8yYEC5f1mFlQO9RGna4LTc9QrcvWunX6FYp83munkQ=",
-        "rev": "bd0ff2d3eac24699c3664d5966b9ef36f388e2ca",
-        "revCount": 1005841,
+        "lastModified": 1790340521,
+        "narHash": "sha256-cRrWlIjVRJ6BHDr9caUdXsZ3owzWIKYHpNmGPHBInIU=",
+        "rev": "f5c082a40f7571c266e74e80ae2e68aadd8a9fc7",
+        "revCount": 1014911,
         "type": "tarball",
-        "url": "https://api.flakehub.com/f/pinned/NixOS/nixpkgs/0.2605.1005841%2Brev-bd0ff2d3eac24699c3664d5966b9ef36f388e2ca/019ea877-a51e-7d63-a6c5-85b9b069aa6c/source.tar.gz"
+        "url": "https://api.flakehub.com/f/pinned/NixOS/nixpkgs/0.2605.1014911%2Brev-f5c082a40f7571c266e74e80ae2e68aadd8a9fc7/01a0dc3a-69e2-7710-9b8b-0b3d4b86cbf4/source.tar.gz"
       },
       "original": {
         "type": "tarball",
@@ -16,7 +34,7 @@
     },
     "root": {
       "inputs": {
-        "nixpkgs": "nixpkgs"
+        "flake": "flake"
       }
     }
   },
