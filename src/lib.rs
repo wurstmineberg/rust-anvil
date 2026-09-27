@@ -66,6 +66,28 @@ pub enum Dimension {
     End,
 }
 
+/// Error type returned from the [`rocket::request::FromParam`] implementation for [`Dimension`].
+#[derive(Debug, thiserror::Error)]
+#[error("invalid Minecraft dimension name")]
+pub struct DimensionFromStrError;
+
+#[cfg(feature = "rocket")]
+impl<'a> rocket::request::FromParam<'a> for Dimension {
+    type Error = DimensionFromStrError;
+
+    fn from_param(param: &'a str) -> Result<Self, Self::Error> {
+        if param.eq_ignore_ascii_case("overworld") {
+            Ok(Self::Overworld)
+        } else if param.eq_ignore_ascii_case("nether") {
+            Ok(Self::Nether)
+        } else if param.eq_ignore_ascii_case("end") {
+            Ok(Self::End)
+        } else {
+            Err(DimensionFromStrError)
+        }
+    }
+}
+
 /// An error returned by `Region::open`.
 #[derive(Debug, thiserror::Error)]
 pub enum RegionDecodeError {
