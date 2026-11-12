@@ -704,17 +704,42 @@ impl ChunkSection {
     }
 }
 
-/// A block.
 #[serde_as]
+#[derive(Deserialize)]
+enum NbtBlockState {
+    Flat(#[serde_as(as = "DisplayFromStr")] BlockId),
+    Nested {
+        #[serde_as(as = "DisplayFromStr")]
+        #[serde(alias = "", alias = "Name")] // Before 26.3 snapshot 7, this key was called `Name`. Starting with 26.3 snapshot 7, it may be empty or be called `id`.
+        id: BlockId,
+        #[serde(default, alias = "Properties")] // alias for versions before 26.3 snapshot 7
+        properties: HashMap<String, String>,
+    },
+}
+
+impl From<NbtBlockState> for BlockState {
+    fn from(state: NbtBlockState) -> Self {
+        match state {
+            NbtBlockState::Flat(name) => Self {
+                properties: HashMap::default(),
+                name,
+            },
+            NbtBlockState::Nested { id, properties } => Self {
+                name: id,
+                properties,
+            },
+        }
+    }
+}
+
+/// A block.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 #[cfg_attr(feature = "async-proto", derive(Protocol))]
-#[serde(rename_all = "PascalCase")]
+#[serde(from = "NbtBlockState")]
 pub struct BlockState {
     /// The [resource location](https://minecraft.wiki/w/Resource_location) of the block.
-    #[serde_as(as = "DisplayFromStr")]
     pub name: BlockId,
     /// The [block state](https://minecraft.wiki/w/Block_states) properties of the block.
-    #[serde(default)]
     pub properties: HashMap<String, String>,
 }
 
