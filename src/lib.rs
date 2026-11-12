@@ -706,6 +706,7 @@ impl ChunkSection {
 
 #[serde_as]
 #[derive(Deserialize)]
+#[serde(untagged)]
 enum NbtBlockState {
     Flat(#[serde_as(as = "DisplayFromStr")] BlockId),
     Nested {
